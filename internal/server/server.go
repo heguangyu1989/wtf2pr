@@ -16,8 +16,8 @@ import (
 
 // Server HTTP server
 type Server struct {
-	engine   *gin.Engine
-	store    *review.Store
+	engine     *gin.Engine
+	store      *review.Store
 	workDir    string
 	reviewFile string
 	staticFS   fs.FS

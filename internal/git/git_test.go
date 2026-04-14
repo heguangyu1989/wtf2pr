@@ -80,8 +80,6 @@ func TestGetUntrackedFiles(t *testing.T) {
 	// Without real git executable this test is limited; verify non-git path returns error
 	_, err := getUntrackedFiles(dir)
 	// git ls-files on a bare .git dir without actual init may succeed or fail depending on git version.
-	// We just ensure no panic.
-	if err != nil {
-		// acceptable
-	}
+	// We just ensure no panic; err is acceptable.
+	_ = err
 }

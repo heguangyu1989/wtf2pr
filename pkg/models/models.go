@@ -73,12 +73,12 @@ type CommitInfo struct {
 
 // FileDiff 文件级别的 diff
 type FileDiff struct {
-	OldFile    string      `json:"oldFile"`
-	NewFile    string      `json:"newFile"`
-	IsNew      bool        `json:"isNew"`
-	IsDeleted  bool        `json:"isDeleted"`
-	IsBinary   bool        `json:"isBinary"`
-	Hunks      []Hunk `json:"hunks,omitempty"`
+	OldFile   string `json:"oldFile"`
+	NewFile   string `json:"newFile"`
+	IsNew     bool   `json:"isNew"`
+	IsDeleted bool   `json:"isDeleted"`
+	IsBinary  bool   `json:"isBinary"`
+	Hunks     []Hunk `json:"hunks,omitempty"`
 }
 
 // Hunk diff 块
@@ -92,10 +92,10 @@ type Hunk struct {
 
 // DiffLine 单行 diff
 type DiffLine struct {
-	Type       LineType `json:"type"`
-	OldLineNo  int      `json:"oldLineNo"`
-	NewLineNo  int      `json:"newLineNo"`
-	Content    string   `json:"content"`
+	Type      LineType `json:"type"`
+	OldLineNo int      `json:"oldLineNo"`
+	NewLineNo int      `json:"newLineNo"`
+	Content   string   `json:"content"`
 }
 
 // Comment review 评论

@@ -51,8 +51,12 @@ func setupTestServer(t *testing.T) (*Server, string) {
 	// create a temp static FS with dist/index.html for embed compatibility in tests
 	staticDir := t.TempDir()
 	distDir := filepath.Join(staticDir, "dist")
-	os.MkdirAll(distDir, 0755)
-	os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html></html>"), 0644)
+	if err := os.MkdirAll(distDir, 0755); err != nil {
+		t.Fatalf("failed to create dist dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatalf("failed to write index.html: %v", err)
+	}
 	gin.SetMode(gin.TestMode)
 	srv := NewServer(dir, os.DirFS(staticDir), "")
 	return srv, dir
@@ -117,7 +121,9 @@ func TestHandleSaveReview(t *testing.T) {
 	req2, _ := http.NewRequest("GET", "/api/review", nil)
 	srv.engine.ServeHTTP(w2, req2)
 	var resp models.APIResponse
-	json.Unmarshal(w2.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal review response: %v", err)
+	}
 	data, ok := resp.Data.([]interface{})
 	if !ok || len(data) != 1 {
 		t.Fatalf("expected 1 review item after save")
@@ -128,7 +134,9 @@ func TestHandleGetDiff_Working(t *testing.T) {
 	srv, dir := setupTestServer(t)
 	// modify file without committing
 	f1 := filepath.Join(dir, "a.txt")
-	os.WriteFile(f1, []byte("hello world\n"), 0644)
+	if err := os.WriteFile(f1, []byte("hello world\n"), 0644); err != nil {
+		t.Fatalf("failed to write a.txt: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/api/diff?type=working", nil)

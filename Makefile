@@ -1,4 +1,4 @@
-.PHONY: dev-web dev-server ensure-dist embed build clean
+.PHONY: dev-web dev-server ensure-dist embed build clean lint lint-go lint-web
 
 WEB_DIR := web
 DIST_DIR := cmd/wtf2pr/dist
@@ -44,6 +44,29 @@ build: embed
 	@echo "Packaging deliverables..."
 	@tar -czvf $(BUILD_DIR)/$(BINARY)-darwin.tar.gz -C $(BUILD_DIR) $(BINARY)-darwin-amd64 $(BINARY)-darwin-arm64
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY)-darwin.tar.gz"
+
+## lint-go: 后端代码检查（优先 golangci-lint，否则 go vet + gofmt）
+##
+lint-go:
+	@echo "==> Linting Go code..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not found, falling back to go vet"; \
+		go vet ./...; \
+	fi
+	@echo "==> Checking Go format..."
+	@test -z "$$(gofmt -l .)" || (echo "Please run gofmt on:" && gofmt -l . && exit 1)
+
+## lint-web: 前端代码检查
+##
+lint-web:
+	@echo "==> Linting frontend code..."
+	@cd $(WEB_DIR) && npm run lint
+
+## lint: 同时检查前后端代码
+##
+lint: lint-go lint-web
 
 ## clean: 清理构建产物
 ##
