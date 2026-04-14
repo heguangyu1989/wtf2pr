@@ -158,6 +158,21 @@ func getUntrackedFiles(workDir string) ([]string, error) {
 	return strings.Split(s, "\n"), nil
 }
 
+// CommitExists 检查指定的 commit hash 是否存在于当前仓库且类型为 commit
+func CommitExists(workDir, hash string) bool {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return false
+	}
+	cmd := exec.Command("git", "cat-file", "-t", hash)
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "commit"
+}
+
 func readUntrackedFileAsDiff(workDir, filePath string) (models.FileDiff, error) {
 	fullPath := filepath.Join(workDir, filePath)
 	data, err := os.ReadFile(fullPath)

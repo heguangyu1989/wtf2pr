@@ -162,6 +162,15 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
 	}
+	pr.Commit = strings.TrimSpace(pr.Commit)
+	if pr.Type == "" && pr.Commit != "" {
+		pr.Type = string(models.DiffTypeCommit)
+	} else if pr.Type == "" {
+		pr.Type = string(models.DiffTypeWorking)
+	}
+	if pr.Type == string(models.DiffTypeCommit) && pr.Commit != "" {
+		pr.CommitExists = git.CommitExists(s.workDir, pr.Commit)
+	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
 }
 
@@ -244,12 +253,20 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 					var pr models.PersistedReview
 					if err := json.Unmarshal(data, &pr); err == nil {
 						item.Type = pr.Type
-						item.Commit = pr.Commit
+						item.Commit = strings.TrimSpace(pr.Commit)
+						if item.Type == "" && item.Commit != "" {
+							item.Type = string(models.DiffTypeCommit)
+						} else if item.Type == "" {
+							item.Type = string(models.DiffTypeWorking)
+						}
 						item.CommentCount = len(pr.Comments)
 						item.CreatedAt = pr.CreatedAt
 						item.UpdatedAt = pr.UpdatedAt
 						if pr.Diff != nil && pr.Diff.CommitInfo != nil {
 							item.CommitMsg = pr.Diff.CommitInfo.Message
+						}
+						if item.Type == string(models.DiffTypeCommit) && item.Commit != "" {
+							item.CommitExists = git.CommitExists(s.workDir, item.Commit)
 						}
 					} else {
 						// old format: []Comment
@@ -317,22 +334,43 @@ func (s *Server) handleExport(c *gin.Context) {
 	}
 
 	var diff *models.DiffResponse
-	persisted := s.store.GetPersisted()
-	// 如果当前 review 保存了 diff，且类型匹配，优先使用保存的 diff
-	if persisted.Diff != nil && string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
-		diff = persisted.Diff
-	} else {
-		// 否则实时获取
-		diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
-		got, err := git.GetDiff(s.workDir, diffReq)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
-			return
+	var comments []models.Comment
+
+	if req.ReviewID != "" {
+		reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+req.ReviewID+".json")
+		if s.reviewFile == "" {
+			reviewFile = "review_" + req.ReviewID + ".json"
 		}
-		diff = got
+		if data, err := os.ReadFile(reviewFile); err == nil {
+			var pr models.PersistedReview
+			if err := json.Unmarshal(data, &pr); err == nil {
+				if pr.Diff != nil {
+					diff = pr.Diff
+				}
+				comments = pr.Comments
+			}
+		}
 	}
 
-	comments := s.store.Get()
+	if diff == nil {
+		persisted := s.store.GetPersisted()
+		if persisted.Diff != nil && string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
+			diff = persisted.Diff
+		} else {
+			diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
+			got, err := git.GetDiff(s.workDir, diffReq)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+				return
+			}
+			diff = got
+		}
+	}
+
+	if comments == nil {
+		comments = s.store.Get()
+	}
+
 	content, err := export.Export(diff, comments, req.Format)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})

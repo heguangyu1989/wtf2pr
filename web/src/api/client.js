@@ -62,9 +62,9 @@ export function getReviewDetail(id) {
   return request(`/review/detail?id=${encodeURIComponent(id)}`)
 }
 
-export function exportReview(format, type, commit) {
+export function exportReview(format, type, commit, reviewID = '') {
   return request('/export', {
     method: 'POST',
-    body: JSON.stringify({ format, type, commit }),
+    body: JSON.stringify({ format, type, commit, reviewID }),
   })
 }

@@ -109,13 +109,14 @@ type Comment struct {
 
 // PersistedReview 持久化的 review 记录
 type PersistedReview struct {
-	ReviewID  string        `json:"reviewID"`
-	Type      string        `json:"type"`
-	Commit    string        `json:"commit,omitempty"`
-	CreatedAt int64         `json:"createdAt"`
-	UpdatedAt int64         `json:"updatedAt"`
-	Diff      *DiffResponse `json:"diff,omitempty"`
-	Comments  []Comment     `json:"comments"`
+	ReviewID     string        `json:"reviewID"`
+	Type         string        `json:"type"`
+	Commit       string        `json:"commit,omitempty"`
+	CommitExists bool          `json:"commitExists"`
+	CreatedAt    int64         `json:"createdAt"`
+	UpdatedAt    int64         `json:"updatedAt"`
+	Diff         *DiffResponse `json:"diff,omitempty"`
+	Comments     []Comment     `json:"comments"`
 }
 
 // ReviewListItem 历史 review 列表项
@@ -125,6 +126,7 @@ type ReviewListItem struct {
 	Type         string `json:"type"`
 	Commit       string `json:"commit,omitempty"`
 	CommitMsg    string `json:"commitMsg,omitempty"`
+	CommitExists bool   `json:"commitExists"`
 	CommentCount int    `json:"commentCount"`
 	CreatedAt    int64  `json:"createdAt"`
 	UpdatedAt    int64  `json:"updatedAt"`
@@ -150,9 +152,10 @@ type SaveReviewRequest struct {
 
 // ExportRequest 导出请求
 type ExportRequest struct {
-	Format ExportFormat `json:"format" binding:"required,oneof=markdown json xml"`
-	Type   DiffType     `json:"type" binding:"required"`
-	Commit string       `json:"commit,omitempty"`
+	Format   ExportFormat `json:"format" binding:"required,oneof=markdown json xml"`
+	Type     DiffType     `json:"type" binding:"required"`
+	Commit   string       `json:"commit,omitempty"`
+	ReviewID string       `json:"reviewID,omitempty"`
 }
 
 // ExportResponse 导出响应

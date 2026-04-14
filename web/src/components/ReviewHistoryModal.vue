@@ -12,8 +12,7 @@
         <div
           v-for="r in reviews"
           :key="r.reviewID"
-          class="border rounded-lg p-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-          @click="$emit('select', r)"
+          class="border rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
         >
           <div class="flex items-center justify-between">
             <div class="font-mono text-sm">{{ r.reviewID.substring(0, 8) }}</div>
@@ -29,6 +28,21 @@
             评论数: {{ r.commentCount }}
             <span v-if="r.updatedAt" class="ml-2">更新于: {{ formatTime(r.updatedAt) }}</span>
           </div>
+          <div class="mt-2 flex items-center gap-2">
+            <button
+              v-if="r.type === 'commit'"
+              class="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+              @click="$emit('switch', r)"
+            >
+              切换并编辑
+            </button>
+            <button
+              class="px-2 py-1 text-xs rounded border hover:bg-gray-100 dark:hover:bg-gray-800"
+              @click="$emit('view', r)"
+            >
+              查看详情
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -39,7 +53,7 @@
 defineProps({
   reviews: { type: Array, default: () => [] },
 })
-defineEmits(['close', 'select'])
+defineEmits(['close', 'switch', 'view'])
 
 function formatTime(ts) {
   if (!ts) return '-'
