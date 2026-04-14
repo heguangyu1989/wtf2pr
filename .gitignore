@@ -1,0 +1,12 @@
+# Binary
+wtf2pr
+
+# Frontend build outputs
+web/dist/
+cmd/wtf2pr/dist/
+
+# Node modules
+web/node_modules/
+
+# Go vendor (if any)
+vendor/
