@@ -17,6 +17,29 @@ const (
 	LineTypeDeletion LineType = "deletion"
 )
 
+// CommitLog 用于 git log 列表展示
+type CommitLog struct {
+	Hash    string `json:"hash"`
+	Message string `json:"message"`
+	Author  string `json:"author"`
+	Date    string `json:"date"`
+}
+
+// CommitListRequest 请求 git log 列表
+type CommitListRequest struct {
+	Page     int `json:"page" form:"page"`
+	PageSize int `json:"pageSize" form:"page_size"`
+}
+
+// CommitListResponse git log 列表响应
+type CommitListResponse struct {
+	List       []CommitLog `json:"list"`
+	Total      int         `json:"total"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"pageSize"`
+	TotalPages int         `json:"totalPages"`
+}
+
 // ExportFormat 表示导出格式
 type ExportFormat string
 
@@ -75,11 +98,6 @@ type DiffLine struct {
 	Content    string   `json:"content"`
 }
 
-// FileReview 文件级别的 review
-type FileReview struct {
-	Comments []Comment `json:"comments"`
-}
-
 // Comment review 评论
 type Comment struct {
 	ID        string `json:"id"`
@@ -87,11 +105,6 @@ type Comment struct {
 	LineKey   string `json:"lineKey,omitempty"` // 格式 "old:{num}" 或 "new:{num}"
 	Content   string `json:"content"`
 	CreatedAt int64  `json:"createdAt"`
-}
-
-// ReviewState 当前 review 状态
-type ReviewState struct {
-	Comments []Comment `json:"comments"`
 }
 
 // SaveReviewRequest 保存 review 请求

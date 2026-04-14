@@ -1,46 +1,35 @@
 <template>
-  <div class="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-    <header class="border-b bg-white dark:bg-gray-900 sticky top-0 z-10">
-      <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
-        <h1 class="text-lg font-semibold">wtf2pr</h1>
-        <div class="flex items-center gap-2">
-          <select v-model="diffType" class="border rounded px-2 py-1 text-sm bg-white dark:bg-gray-900">
-            <option value="working">Working tree</option>
-            <option value="commit">Commit</option>
-          </select>
-          <input
-            v-if="diffType === 'commit'"
-            v-model="commitHash"
-            placeholder="commit hash"
-            class="border rounded px-2 py-1 text-sm w-40 bg-white dark:bg-gray-900"
-          />
-          <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="loadDiff">加载</button>
-        </div>
-        <div class="flex-1"></div>
-        <div class="flex items-center gap-2">
-          <select v-model="exportFormat" class="border rounded px-2 py-1 text-sm bg-white dark:bg-gray-900">
-            <option value="markdown">Markdown</option>
-            <option value="json">JSON</option>
-            <option value="xml">XML</option>
-          </select>
-          <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50 dark:hover:bg-gray-800" @click="doExport">导出</button>
-          <button class="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700" @click="saveReview">保存 Review</button>
-        </div>
-      </div>
-    </header>
+  <div class="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col h-screen overflow-hidden">
+    <AppHeader
+      :diff-type="diffType"
+      :selected-commit-hash="selectedCommitHash"
+      :commit-list="commitList"
+      :commit-page="commitPage"
+      :commit-total-pages="commitTotalPages"
+      :review-label="reviewLabel"
+      :saved="saved"
+      :export-format="exportFormat"
+      @update:diff-type="diffType = $event"
+      @update:selected-commit-hash="selectedCommitHash = $event"
+      @change-commit-page="changeCommitPage"
+      @show-help="showHelp = true"
+      @update:export-format="exportFormat = $event"
+      @do-export="doExport"
+      @save-review="saveReview"
+    />
 
-    <main class="max-w-7xl mx-auto px-4 py-4">
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4 overflow-hidden">
       <div v-if="loading" class="text-sm text-gray-500">加载中...</div>
       <div v-else-if="error" class="text-sm text-red-600">{{ error }}</div>
       <div v-else-if="!diffData || !diffData.files.length" class="text-sm text-gray-500">暂无 diff 数据</div>
 
-      <div v-else class="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <aside class="lg:col-span-1">
-          <div class="border rounded-lg bg-white dark:bg-gray-900 overflow-hidden">
-            <div class="px-3 py-2 border-b bg-gray-100 dark:bg-gray-800 text-sm font-medium">
+      <div v-else class="grid grid-cols-1 lg:grid-cols-4 gap-4 h-full">
+        <aside class="lg:col-span-1 h-full overflow-hidden">
+          <div class="border rounded-lg bg-white dark:bg-gray-900 overflow-hidden h-full flex flex-col">
+            <div class="px-3 py-2 border-b bg-gray-100 dark:bg-gray-800 text-sm font-medium shrink-0">
               文件 ({{ diffData.files.length }})
             </div>
-            <ul class="max-h-[calc(100vh-140px)] overflow-y-auto">
+            <ul class="overflow-y-auto flex-1">
               <li
                 v-for="(f, i) in diffData.files"
                 :key="i"
@@ -59,8 +48,8 @@
           </div>
         </aside>
 
-        <section class="lg:col-span-3 space-y-4">
-          <div v-if="commitInfo" class="border rounded-lg p-3 bg-white dark:bg-gray-900 text-sm space-y-1">
+        <section class="lg:col-span-3 h-full overflow-y-auto space-y-4 pr-1">
+          <div v-if="commitInfo" class="border rounded-lg p-3 bg-white dark:bg-gray-900 text-sm space-y-1 shrink-0">
             <div><span class="text-gray-500">Commit:</span> {{ commitInfo.hash }}</div>
             <div><span class="text-gray-500">Author:</span> {{ commitInfo.author }}</div>
             <div><span class="text-gray-500">Date:</span> {{ commitInfo.date }}</div>
@@ -71,37 +60,33 @@
             v-if="selectedFile"
             :file="selectedFile"
             :comments="comments"
-            @update:comments="comments = $event"
+            @update:comments="onCommentsUpdate"
           />
         </section>
       </div>
     </main>
 
-    <!-- Export Modal -->
-    <div v-if="showExport" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-      <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
-        <div class="px-4 py-3 border-b flex items-center justify-between">
-          <div class="font-medium">导出结果 ({{ exportResult?.format }})</div>
-          <button class="text-gray-500 hover:text-gray-700" @click="showExport = false">关闭</button>
-        </div>
-        <div class="p-4 overflow-auto flex-1">
-          <pre class="text-xs font-mono whitespace-pre-wrap bg-gray-100 dark:bg-gray-800 p-3 rounded">{{ exportResult?.content }}</pre>
-        </div>
-        <div class="px-4 py-3 border-t flex justify-end gap-2">
-          <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="copyExport">复制到剪贴板</button>
-        </div>
-      </div>
-    </div>
+    <ExportModal
+      v-if="showExport"
+      :format="exportResult?.format"
+      :content="exportResult?.content"
+      @close="showExport = false"
+    />
+
+    <HelpModal v-if="showHelp" @close="showHelp = false" />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import AppHeader from './components/AppHeader.vue'
 import DiffFile from './components/DiffFile.vue'
-import { getDiff, getReview, saveReview as apiSaveReview, exportReview } from './api/client.js'
+import ExportModal from './components/ExportModal.vue'
+import HelpModal from './components/HelpModal.vue'
+import { getDiff, getReview, saveReview as apiSaveReview, exportReview, getCommits, getConfig } from './api/client.js'
 
 const diffType = ref('working')
-const commitHash = ref('')
+const selectedCommitHash = ref('')
 const diffData = ref(null)
 const loading = ref(false)
 const error = ref('')
@@ -110,15 +95,56 @@ const comments = ref([])
 const exportFormat = ref('markdown')
 const showExport = ref(false)
 const exportResult = ref(null)
+const showHelp = ref(false)
+const saved = ref(true)
+const reviewLabel = ref('')
+
+const commitList = ref([])
+const commitPage = ref(1)
+const commitTotalPages = ref(1)
 
 const commitInfo = computed(() => diffData.value?.commitInfo || null)
 const selectedFile = computed(() => diffData.value?.files[selectedIndex.value] || null)
+
+async function loadCommits() {
+  if (diffType.value !== 'commit') return
+  try {
+    const res = await getCommits(commitPage.value, 10)
+    commitList.value = res.list || []
+    commitPage.value = res.page || 1
+    commitTotalPages.value = res.totalPages || 1
+  } catch (e) {
+    commitList.value = []
+  }
+}
+
+function changeCommitPage(delta) {
+  commitPage.value += delta
+  loadCommits()
+}
+
+watch(diffType, async (val) => {
+  if (val === 'commit') {
+    await loadCommits()
+  }
+  await loadDiff()
+})
+
+watch(selectedCommitHash, async () => {
+  await loadDiff()
+})
 
 async function loadDiff() {
   loading.value = true
   error.value = ''
   try {
-    diffData.value = await getDiff(diffType.value, commitHash.value)
+    if (diffType.value === 'commit' && !selectedCommitHash.value) {
+      error.value = '请选择一个 Commit'
+      diffData.value = null
+      loading.value = false
+      return
+    }
+    diffData.value = await getDiff(diffType.value, selectedCommitHash.value)
     selectedIndex.value = 0
   } catch (e) {
     error.value = e.message
@@ -128,10 +154,15 @@ async function loadDiff() {
   }
 }
 
+function onCommentsUpdate(list) {
+  comments.value = list
+  saved.value = false
+}
+
 async function saveReview() {
   try {
     await apiSaveReview(comments.value)
-    alert('Review 已保存')
+    saved.value = true
   } catch (e) {
     alert('保存失败: ' + e.message)
   }
@@ -139,16 +170,11 @@ async function saveReview() {
 
 async function doExport() {
   try {
-    exportResult.value = await exportReview(exportFormat.value, diffType.value, commitHash.value)
+    exportResult.value = await exportReview(exportFormat.value, diffType.value, selectedCommitHash.value)
     showExport.value = true
   } catch (e) {
     alert('导出失败: ' + e.message)
   }
-}
-
-function copyExport() {
-  if (!exportResult.value) return
-  navigator.clipboard.writeText(exportResult.value.content).then(() => alert('已复制'))
 }
 
 onMounted(async () => {
@@ -157,6 +183,21 @@ onMounted(async () => {
     comments.value = await getReview()
   } catch {
     comments.value = []
+  }
+  try {
+    const cfg = await getConfig()
+    if (cfg.reviewFile) {
+      const match = cfg.reviewFile.match(/review_([^/]+)\.json$/)
+      if (match) {
+        reviewLabel.value = `Review ID: ${match[1]}`
+      } else if (cfg.reviewFile.endsWith('/review.json')) {
+        reviewLabel.value = 'Review: default'
+      } else {
+        reviewLabel.value = `Review: ${cfg.reviewFile.split('/').pop()}`
+      }
+    }
+  } catch {
+    reviewLabel.value = ''
   }
 })
 </script>

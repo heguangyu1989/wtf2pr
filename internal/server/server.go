@@ -17,8 +17,9 @@ import (
 type Server struct {
 	engine   *gin.Engine
 	store    *review.Store
-	workDir  string
-	staticFS embed.FS
+	workDir    string
+	reviewFile string
+	staticFS   embed.FS
 }
 
 // NewServer 创建 server
@@ -29,10 +30,11 @@ func NewServer(workDir string, staticFS embed.FS, reviewFile string) *Server {
 	r.Use(corsMiddleware())
 
 	s := &Server{
-		engine:   r,
-		store:    review.NewStore(reviewFile),
-		workDir:  workDir,
-		staticFS: staticFS,
+		engine:     r,
+		store:      review.NewStore(reviewFile),
+		workDir:    workDir,
+		reviewFile: reviewFile,
+		staticFS:   staticFS,
 	}
 	s.setupRoutes()
 	return s
@@ -42,6 +44,8 @@ func (s *Server) setupRoutes() {
 	api := s.engine.Group("/api")
 	{
 		api.GET("/diff", s.handleGetDiff)
+		api.GET("/commits", s.handleGetCommits)
+		api.GET("/config", s.handleGetConfig)
 		api.GET("/review", s.handleGetReview)
 		api.POST("/review", s.handleSaveReview)
 		api.POST("/export", s.handleExport)
@@ -73,6 +77,32 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func (s *Server) handleGetConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
+		"reviewFile": s.reviewFile,
+	}})
+}
+
+func (s *Server) handleGetCommits(c *gin.Context) {
+	var req models.CommitListRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.PageSize < 1 {
+		req.PageSize = 10
+	}
+	resp, err := git.GetCommits(s.workDir, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: resp})
 }
 
 func (s *Server) handleGetDiff(c *gin.Context) {

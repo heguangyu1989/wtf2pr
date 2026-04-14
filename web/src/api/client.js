@@ -21,6 +21,17 @@ export function getDiff(type = 'working', commit = '') {
   return request(`/diff?${qs.toString()}`)
 }
 
+export function getCommits(page = 1, pageSize = 10) {
+  const qs = new URLSearchParams()
+  qs.set('page', String(page))
+  qs.set('page_size', String(pageSize))
+  return request(`/commits?${qs.toString()}`)
+}
+
+export function getConfig() {
+  return request('/config')
+}
+
 export function getReview() {
   return request('/review')
 }

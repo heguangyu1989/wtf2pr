@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/wtf2pr/wtf2pr/pkg/models"
@@ -83,6 +84,63 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 		Commit:     commit,
 		CommitInfo: commitInfo,
 		Files:      files,
+	}, nil
+}
+
+// GetCommits 获取分页的 git log
+func GetCommits(workDir string, req models.CommitListRequest) (*models.CommitListResponse, error) {
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.PageSize < 1 {
+		req.PageSize = 10
+	}
+
+	// 先获取总数
+	countCmd := exec.Command("git", "rev-list", "--count", "HEAD")
+	countCmd.Dir = workDir
+	countOut, err := countCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-list count failed: %w", err)
+	}
+	total, _ := strconv.Atoi(strings.TrimSpace(string(countOut)))
+
+	// 获取当前页数据
+	skip := (req.Page - 1) * req.PageSize
+	logCmd := exec.Command("git", "log", "--pretty=format:%H%x00%an%x00%ad%x00%s", "--skip", strconv.Itoa(skip), "-n", strconv.Itoa(req.PageSize))
+	logCmd.Dir = workDir
+	logOut, err := logCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log failed: %w", err)
+	}
+
+	var list []models.CommitLog
+	if len(logOut) > 0 {
+		entries := strings.Split(strings.TrimSpace(string(logOut)), "\n")
+		for _, entry := range entries {
+			parts := strings.Split(entry, "\x00")
+			if len(parts) >= 4 {
+				list = append(list, models.CommitLog{
+					Hash:    parts[0],
+					Author:  parts[1],
+					Date:    parts[2],
+					Message: parts[3],
+				})
+			}
+		}
+	}
+
+	totalPages := total / req.PageSize
+	if total%req.PageSize != 0 {
+		totalPages++
+	}
+
+	return &models.CommitListResponse{
+		List:       list,
+		Total:      total,
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+		TotalPages: totalPages,
 	}, nil
 }
 
