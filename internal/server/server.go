@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/wtf2pr/wtf2pr/internal/export"
 	"github.com/wtf2pr/wtf2pr/internal/git"
 	"github.com/wtf2pr/wtf2pr/internal/review"
@@ -48,7 +50,10 @@ func (s *Server) setupRoutes() {
 		api.GET("/commits", s.handleGetCommits)
 		api.GET("/config", s.handleGetConfig)
 		api.GET("/review", s.handleGetReview)
+		api.GET("/reviews", s.handleGetReviews)
 		api.POST("/review", s.handleSaveReview)
+		api.POST("/review/new", s.handleNewReview)
+		api.POST("/review/switch", s.handleSwitchReview)
 		api.POST("/export", s.handleExport)
 	}
 
@@ -142,6 +147,70 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 	}
 	s.store.Save(req.Comments)
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
+}
+
+func (s *Server) handleGetReviews(c *gin.Context) {
+	var items []models.ReviewItem
+	dir := filepath.Dir(s.reviewFile)
+	if dir == "." || dir == "" {
+		dir, _ = os.Getwd()
+	}
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, "review_") && strings.HasSuffix(name, ".json") {
+				id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
+				items = append(items, models.ReviewItem{
+					ReviewID:   id,
+					ReviewFile: name,
+				})
+			}
+		}
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: items})
+}
+
+func (s *Server) handleNewReview(c *gin.Context) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+	reviewID := id.String()
+	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+reviewID+".json")
+	if s.reviewFile == "" {
+		reviewFile = "review_" + reviewID + ".json"
+	}
+	s.reviewFile = reviewFile
+	s.store.SwitchFile(reviewFile)
+	s.store.Save([]models.Comment{})
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.NewReviewResponse{
+		ReviewID:   reviewID,
+		ReviewFile: filepath.Base(reviewFile),
+	}})
+}
+
+func (s *Server) handleSwitchReview(c *gin.Context) {
+	var req models.SwitchReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+req.ReviewID+".json")
+	if s.reviewFile == "" {
+		reviewFile = "review_" + req.ReviewID + ".json"
+	}
+	if _, err := os.Stat(reviewFile); os.IsNotExist(err) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "review not found"})
+		return
+	}
+	s.reviewFile = reviewFile
+	s.store.SwitchFile(reviewFile)
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.NewReviewResponse{
+		ReviewID:   req.ReviewID,
+		ReviewFile: filepath.Base(reviewFile),
+	}})
 }
 
 func (s *Server) handleExport(c *gin.Context) {

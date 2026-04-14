@@ -53,6 +53,7 @@ go test ./internal/server/ -v
 | `TestStoreSaveAndGet` | 验证 `Save` 后 `Get` 返回正确数据，且返回的是深拷贝（修改结果不影响 Store） |
 | `TestStoreFilePersistence` | 验证带文件路径的 Store 能将评论持久化到 JSON，并从 JSON 重新加载 |
 | `TestStoreClear` | 验证 `Clear` 清空内存与磁盘文件 |
+| `TestStoreSwitchFile` | 验证 `SwitchFile` 切换存储文件后自动加载该文件已有评论，且旧文件数据不受影响 |
 | `TestStoreConcurrency` | 高并发读写测试（100 协程），验证 `sync.RWMutex` 无线程安全问题 |
 
 ---
@@ -87,6 +88,9 @@ go test ./internal/server/ -v
 | `TestHandleSaveReview` | 验证 `POST /api/review` 保存后，再次 GET 能正确取回 |
 | `TestHandleGetDiff_Working` | 在真实临时 Git 仓库中修改文件，验证 `GET /api/diff?type=working` 返回 diff 数据 |
 | `TestHandleGetCommits` | 在真实临时 Git 仓库中验证 `GET /api/commits` 返回分页 Commit 列表 |
+| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回所有历史 review 文件列表 |
+| `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID，创建空存储文件，并更新当前 review |
+| `TestHandleSwitchReview` | 验证 `POST /api/review/switch` 能切换到历史 review 并加载其评论数据；不存在时返回 400 |
 | `TestHandleExport` | 验证 `POST /api/export` 返回指定格式的导出内容 |
 
 > **说明**：`server` 测试使用真实 `git init` 创建的临时仓库，确保 API 与 Git 命令的集成链路完整可用。

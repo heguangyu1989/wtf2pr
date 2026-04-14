@@ -84,6 +84,36 @@ func TestStoreClear(t *testing.T) {
 	}
 }
 
+func TestStoreSwitchFile(t *testing.T) {
+	dir := t.TempDir()
+	file1 := filepath.Join(dir, "review_a.json")
+	file2 := filepath.Join(dir, "review_b.json")
+
+	// Pre-create file2 with data
+	if err := os.WriteFile(file2, []byte(`[{"id":"2","filePath":"b.go","content":"from-file2"}]`), 0644); err != nil {
+		t.Fatalf("failed to create file2: %v", err)
+	}
+
+	s := NewStore(file1)
+	s.Save([]models.Comment{{ID: "1", Content: "a"}})
+
+	// Switch to file2 should load its data
+	s.SwitchFile(file2)
+	got := s.Get()
+	if len(got) != 1 || got[0].Content != "from-file2" {
+		t.Errorf("expected file2 data after switch, got %+v", got)
+	}
+
+	// Save to new file
+	s.Save([]models.Comment{{ID: "2", Content: "b"}})
+
+	// Old file should remain untouched
+	s2 := NewStore(file1)
+	if len(s2.Get()) != 1 || s2.Get()[0].Content != "a" {
+		t.Errorf("old file should keep original data")
+	}
+}
+
 func TestStoreConcurrency(t *testing.T) {
 	s := NewStore("")
 	var wg sync.WaitGroup

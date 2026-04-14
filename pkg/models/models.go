@@ -107,6 +107,23 @@ type Comment struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+// ReviewItem 历史 review 列表项
+type ReviewItem struct {
+	ReviewID   string `json:"reviewID"`
+	ReviewFile string `json:"reviewFile"`
+}
+
+// SwitchReviewRequest 切换 review 请求
+type SwitchReviewRequest struct {
+	ReviewID string `json:"reviewID" binding:"required"`
+}
+
+// NewReviewResponse 新建 review 响应
+type NewReviewResponse struct {
+	ReviewID   string `json:"reviewID"`
+	ReviewFile string `json:"reviewFile"`
+}
+
 // SaveReviewRequest 保存 review 请求
 type SaveReviewRequest struct {
 	Comments []Comment `json:"comments" binding:"required"`

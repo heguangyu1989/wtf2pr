@@ -6,6 +6,8 @@
       :commit-list="commitList"
       :commit-page="commitPage"
       :commit-total-pages="commitTotalPages"
+      :selected-review-i-d="selectedReviewID"
+      :review-list="reviewList"
       :review-label="reviewLabel"
       :saved="saved"
       :export-format="exportFormat"
@@ -13,6 +15,8 @@
       @update:selected-commit-hash="selectedCommitHash = $event"
       @change-commit-page="changeCommitPage"
       @show-help="showHelp = true"
+      @new-review="createNewReview"
+      @switch-review="switchToReview"
       @update:export-format="exportFormat = $event"
       @do-export="doExport"
       @save-review="saveReview"
@@ -83,7 +87,7 @@ import AppHeader from './components/AppHeader.vue'
 import DiffFile from './components/DiffFile.vue'
 import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
-import { getDiff, getReview, saveReview as apiSaveReview, exportReview, getCommits, getConfig } from './api/client.js'
+import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviews, exportReview, getCommits, getConfig } from './api/client.js'
 
 const diffType = ref('working')
 const selectedCommitHash = ref('')
@@ -102,9 +106,22 @@ const reviewLabel = ref('')
 const commitList = ref([])
 const commitPage = ref(1)
 const commitTotalPages = ref(1)
+const reviewList = ref([])
 
 const commitInfo = computed(() => diffData.value?.commitInfo || null)
 const selectedFile = computed(() => diffData.value?.files[selectedIndex.value] || null)
+const selectedReviewID = computed(() => {
+  if (!reviewLabel.value || !reviewLabel.value.startsWith('Review ID: ')) return ''
+  return reviewLabel.value.replace('Review ID: ', '')
+})
+
+async function loadReviews() {
+  try {
+    reviewList.value = await getReviews()
+  } catch {
+    reviewList.value = []
+  }
+}
 
 async function loadCommits() {
   if (diffType.value !== 'commit') return
@@ -159,6 +176,30 @@ function onCommentsUpdate(list) {
   saved.value = false
 }
 
+async function createNewReview() {
+  try {
+    const res = await apiNewReview()
+    comments.value = []
+    saved.value = true
+    reviewLabel.value = res.reviewID ? `Review ID: ${res.reviewID}` : ''
+    await loadReviews()
+  } catch (e) {
+    alert('新建 Review 失败: ' + e.message)
+  }
+}
+
+async function switchToReview(reviewID) {
+  if (!reviewID) return
+  try {
+    await apiSwitchReview(reviewID)
+    comments.value = await getReview()
+    saved.value = true
+    reviewLabel.value = `Review ID: ${reviewID}`
+  } catch (e) {
+    alert('切换 Review 失败: ' + e.message)
+  }
+}
+
 async function saveReview() {
   try {
     await apiSaveReview(comments.value)
@@ -198,5 +239,6 @@ onMounted(async () => {
   } catch {
     reviewLabel.value = ''
   }
+  await loadReviews()
 })
 </script>

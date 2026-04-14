@@ -43,6 +43,21 @@ export function saveReview(comments) {
   })
 }
 
+export function newReview() {
+  return request('/review/new', { method: 'POST' })
+}
+
+export function getReviews() {
+  return request('/reviews')
+}
+
+export function switchReview(reviewID) {
+  return request('/review/switch', {
+    method: 'POST',
+    body: JSON.stringify({ reviewID }),
+  })
+}
+
 export function exportReview(format, type, commit) {
   return request('/export', {
     method: 'POST',

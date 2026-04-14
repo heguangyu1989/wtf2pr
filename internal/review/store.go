@@ -29,6 +29,19 @@ func NewStore(filePath string) *Store {
 	return s
 }
 
+// SwitchFile 切换存储文件并加载已有评论
+func (s *Store) SwitchFile(filePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.filePath = filePath
+	s.comments = []models.Comment{}
+	if filePath != "" {
+		if data, err := os.ReadFile(filePath); err == nil {
+			_ = json.Unmarshal(data, &s.comments)
+		}
+	}
+}
+
 // Save 保存评论列表并持久化到 JSON
 func (s *Store) Save(comments []models.Comment) {
 	s.mu.Lock()

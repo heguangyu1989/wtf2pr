@@ -48,6 +48,16 @@
       <div class="flex-1"></div>
 
       <div class="flex items-center gap-3 text-sm">
+        <select
+          :value="selectedReviewID"
+          class="border rounded px-2 py-1 text-sm w-40 bg-white dark:bg-gray-900"
+          @change="$emit('switchReview', $event.target.value)"
+        >
+          <option value="">切换 Review</option>
+          <option v-for="r in reviewList" :key="r.reviewID" :value="r.reviewID">
+            {{ r.reviewID.substring(0, 8) }}
+          </option>
+        </select>
         <div v-if="reviewLabel" class="text-xs text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
           {{ reviewLabel }}
         </div>
@@ -58,6 +68,7 @@
           {{ saved ? '已保存' : '未保存' }}
         </div>
         <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50 dark:hover:bg-gray-800" @click="$emit('showHelp')">帮助</button>
+        <button class="px-3 py-1 bg-purple-600 text-white text-sm rounded hover:bg-purple-700" @click="$emit('newReview')">新建 Review</button>
         <select
           :value="exportFormat"
           class="border rounded px-2 py-1 text-sm bg-white dark:bg-gray-900"
@@ -81,6 +92,8 @@ defineProps({
   commitList: { type: Array, default: () => [] },
   commitPage: { type: Number, default: 1 },
   commitTotalPages: { type: Number, default: 1 },
+  selectedReviewID: { type: String, default: '' },
+  reviewList: { type: Array, default: () => [] },
   reviewLabel: { type: String, default: '' },
   saved: { type: Boolean, default: true },
   exportFormat: { type: String, default: 'markdown' },
@@ -90,6 +103,8 @@ defineEmits([
   'update:selectedCommitHash',
   'changeCommitPage',
   'showHelp',
+  'newReview',
+  'switchReview',
   'update:exportFormat',
   'doExport',
   'saveReview',
