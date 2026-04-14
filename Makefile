@@ -34,16 +34,21 @@ embed:
 	@rm -rf $(DIST_DIR)
 	@cp -r $(WEB_DIR)/dist $(DIST_DIR)
 
-## build: 构建 macOS 版本最终交付物（amd64 + arm64）
+## build: 构建 macOS / Linux 最终交付物（amd64 + arm64）
 ##
 build: embed
-	@echo "Building macOS binaries..."
+	@echo "Building binaries..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 ./cmd/wtf2pr
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 ./cmd/wtf2pr
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY)-linux-amd64 ./cmd/wtf2pr
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY)-linux-arm64 ./cmd/wtf2pr
 	@echo "Packaging deliverables..."
 	@tar -czvf $(BUILD_DIR)/$(BINARY)-darwin.tar.gz -C $(BUILD_DIR) $(BINARY)-darwin-amd64 $(BINARY)-darwin-arm64
-	@echo "Build complete: $(BUILD_DIR)/$(BINARY)-darwin.tar.gz"
+	@tar -czvf $(BUILD_DIR)/$(BINARY)-linux.tar.gz -C $(BUILD_DIR) $(BINARY)-linux-amd64 $(BINARY)-linux-arm64
+	@echo "Build complete:"
+	@echo "  $(BUILD_DIR)/$(BINARY)-darwin.tar.gz"
+	@echo "  $(BUILD_DIR)/$(BINARY)-linux.tar.gz"
 
 ## lint-go: 后端代码检查（优先 golangci-lint，否则 go vet + gofmt）
 ##
