@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wtf2pr/wtf2pr/internal/export"
@@ -79,8 +81,14 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) handleGetConfig(c *gin.Context) {
+	reviewFileName := filepath.Base(s.reviewFile)
+	reviewID := ""
+	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
+		reviewID = strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
+	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
-		"reviewFile": s.reviewFile,
+		"reviewFile": reviewFileName,
+		"reviewID":   reviewID,
 	}})
 }
 

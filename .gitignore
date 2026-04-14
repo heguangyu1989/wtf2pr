@@ -12,3 +12,6 @@ web/node_modules/
 vendor/
 
 build/
+
+# Environment files
+.env*

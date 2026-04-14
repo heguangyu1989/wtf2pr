@@ -53,7 +53,7 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 		return nil, fmt.Errorf("commit hash is required")
 	}
 	// 获取 commit 信息
-	infoCmd := exec.Command("git", "show", "-s", "--format=%H%n%an%n%ad%n%s", commit)
+	infoCmd := exec.Command("git", "show", "-s", "--format=%H%n%an%n%ad%n%s", "--", commit)
 	infoCmd.Dir = workDir
 	infoOut, err := infoCmd.Output()
 	if err != nil {
@@ -69,7 +69,7 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 	}
 
 	// 获取 diff
-	diffCmd := exec.Command("git", "show", commit, "--format=", "-p")
+	diffCmd := exec.Command("git", "show", "--format=", "-p", "--", commit)
 	diffCmd.Dir = workDir
 	diffOut, err := diffCmd.Output()
 	if err != nil {

@@ -186,14 +186,13 @@ onMounted(async () => {
   }
   try {
     const cfg = await getConfig()
-    if (cfg.reviewFile) {
-      const match = cfg.reviewFile.match(/review_([^/]+)\.json$/)
-      if (match) {
-        reviewLabel.value = `Review ID: ${match[1]}`
-      } else if (cfg.reviewFile.endsWith('/review.json')) {
+    if (cfg.reviewID) {
+      reviewLabel.value = `Review ID: ${cfg.reviewID}`
+    } else if (cfg.reviewFile) {
+      if (cfg.reviewFile === 'review.json') {
         reviewLabel.value = 'Review: default'
       } else {
-        reviewLabel.value = `Review: ${cfg.reviewFile.split('/').pop()}`
+        reviewLabel.value = `Review: ${cfg.reviewFile}`
       }
     }
   } catch {
