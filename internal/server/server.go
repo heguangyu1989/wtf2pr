@@ -1,12 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -50,6 +52,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/commits", s.handleGetCommits)
 		api.GET("/config", s.handleGetConfig)
 		api.GET("/review", s.handleGetReview)
+		api.GET("/review/detail", s.handleGetReviewDetail)
 		api.GET("/reviews", s.handleGetReviews)
 		api.POST("/review", s.handleSaveReview)
 		api.POST("/review/new", s.handleNewReview)
@@ -135,8 +138,31 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 }
 
 func (s *Server) handleGetReview(c *gin.Context) {
-	comments := s.store.Get()
-	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: comments})
+	persisted := s.store.GetPersisted()
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: persisted})
+}
+
+func (s *Server) handleGetReviewDetail(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "id is required"})
+		return
+	}
+	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+id+".json")
+	if s.reviewFile == "" {
+		reviewFile = "review_" + id + ".json"
+	}
+	data, err := os.ReadFile(reviewFile)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.APIResponse{Code: 404, Message: "review not found"})
+		return
+	}
+	var pr models.PersistedReview
+	if err := json.Unmarshal(data, &pr); err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
 }
 
 func (s *Server) handleSaveReview(c *gin.Context) {
@@ -145,12 +171,59 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	s.store.Save(req.Comments)
+
+	reviewFileName := filepath.Base(s.reviewFile)
+	reviewID := ""
+	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
+		reviewID = strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
+	}
+
+	now := getTimestamp()
+	old := s.store.GetPersisted()
+
+	// 如果评论为空，直接删除文件（不写入历史）
+	if len(req.Comments) == 0 {
+		s.store.Save(&models.PersistedReview{
+			ReviewID:  reviewID,
+			Type:      string(req.Type),
+			Commit:    req.Commit,
+			CreatedAt: old.CreatedAt,
+			UpdatedAt: now,
+			Comments:  []models.Comment{},
+		})
+		c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
+		return
+	}
+
+	// 获取当前 diff 上下文并一起保存
+	var diffData *models.DiffResponse
+	if req.Type != "" {
+		diff, err := git.GetDiff(s.workDir, models.DiffRequest{Type: req.Type, Commit: req.Commit})
+		if err == nil {
+			diffData = diff
+		}
+	}
+
+	createdAt := old.CreatedAt
+	if createdAt == 0 {
+		createdAt = now
+	}
+
+	persisted := &models.PersistedReview{
+		ReviewID:  reviewID,
+		Type:      string(req.Type),
+		Commit:    req.Commit,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+		Diff:      diffData,
+		Comments:  req.Comments,
+	}
+	s.store.Save(persisted)
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
 }
 
 func (s *Server) handleGetReviews(c *gin.Context) {
-	var items []models.ReviewItem
+	var items []models.ReviewListItem
 	dir := filepath.Dir(s.reviewFile)
 	if dir == "." || dir == "" {
 		dir, _ = os.Getwd()
@@ -161,10 +234,34 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 			name := entry.Name()
 			if strings.HasPrefix(name, "review_") && strings.HasSuffix(name, ".json") {
 				id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
-				items = append(items, models.ReviewItem{
+				item := models.ReviewListItem{
 					ReviewID:   id,
 					ReviewFile: name,
-				})
+				}
+				// 尝试读取元信息
+				fp := filepath.Join(dir, name)
+				if data, err := os.ReadFile(fp); err == nil {
+					var pr models.PersistedReview
+					if err := json.Unmarshal(data, &pr); err == nil {
+						item.Type = pr.Type
+						item.Commit = pr.Commit
+						item.CommentCount = len(pr.Comments)
+						item.CreatedAt = pr.CreatedAt
+						item.UpdatedAt = pr.UpdatedAt
+						if pr.Diff != nil && pr.Diff.CommitInfo != nil {
+							item.CommitMsg = pr.Diff.CommitInfo.Message
+						}
+					} else {
+						// old format: []Comment
+						var comments []models.Comment
+						if err := json.Unmarshal(data, &comments); err == nil {
+							item.CommentCount = len(comments)
+						}
+					}
+				}
+				if item.CommentCount > 0 {
+					items = append(items, item)
+				}
 			}
 		}
 	}
@@ -184,7 +281,6 @@ func (s *Server) handleNewReview(c *gin.Context) {
 	}
 	s.reviewFile = reviewFile
 	s.store.SwitchFile(reviewFile)
-	s.store.Save([]models.Comment{})
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.NewReviewResponse{
 		ReviewID:   reviewID,
 		ReviewFile: filepath.Base(reviewFile),
@@ -220,12 +316,20 @@ func (s *Server) handleExport(c *gin.Context) {
 		return
 	}
 
-	// 获取 diff
-	diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
-	diff, err := git.GetDiff(s.workDir, diffReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
-		return
+	var diff *models.DiffResponse
+	persisted := s.store.GetPersisted()
+	// 如果当前 review 保存了 diff，且类型匹配，优先使用保存的 diff
+	if persisted.Diff != nil && string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
+		diff = persisted.Diff
+	} else {
+		// 否则实时获取
+		diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
+		got, err := git.GetDiff(s.workDir, diffReq)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+			return
+		}
+		diff = got
 	}
 
 	comments := s.store.Get()
@@ -239,4 +343,8 @@ func (s *Server) handleExport(c *gin.Context) {
 		Format:  req.Format,
 		Content: content,
 	}})
+}
+
+func getTimestamp() int64 {
+	return time.Now().Unix()
 }

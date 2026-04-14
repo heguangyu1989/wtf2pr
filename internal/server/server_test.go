@@ -91,12 +91,13 @@ func TestHandleGetReview(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid response: %v", err)
 	}
-	data, ok := resp.Data.([]interface{})
+	data, ok := resp.Data.(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected array data, got %T", resp.Data)
+		t.Fatalf("expected object data, got %T", resp.Data)
 	}
-	if len(data) != 0 {
-		t.Errorf("expected empty review, got %d items", len(data))
+	comments, ok := data["comments"].([]interface{})
+	if !ok || len(comments) != 0 {
+		t.Errorf("expected empty comments, got %v", data["comments"])
 	}
 }
 
@@ -106,6 +107,7 @@ func TestHandleSaveReview(t *testing.T) {
 		Comments: []models.Comment{
 			{ID: "1", FilePath: "a.go", Content: "test"},
 		},
+		Type: models.DiffTypeWorking,
 	}
 	body, _ := json.Marshal(payload)
 	w := httptest.NewRecorder()
@@ -124,9 +126,13 @@ func TestHandleSaveReview(t *testing.T) {
 	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal review response: %v", err)
 	}
-	data, ok := resp.Data.([]interface{})
-	if !ok || len(data) != 1 {
-		t.Fatalf("expected 1 review item after save")
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	comments, ok := data["comments"].([]interface{})
+	if !ok || len(comments) != 1 {
+		t.Fatalf("expected 1 review comment after save")
 	}
 }
 
@@ -183,7 +189,7 @@ func TestHandleGetCommits(t *testing.T) {
 func TestHandleNewReview(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	// First save a comment
-	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "old"}}})
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "old"}}, Type: models.DiffTypeWorking})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -219,21 +225,33 @@ func TestHandleNewReview(t *testing.T) {
 	if err := json.Unmarshal(w3.Body.Bytes(), &resp3); err != nil {
 		t.Fatalf("failed to unmarshal review get response: %v", err)
 	}
-	list, ok := resp3.Data.([]interface{})
-	if !ok || len(list) != 0 {
+	pr, ok := resp3.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	comments, ok := pr["comments"].([]interface{})
+	if !ok || len(comments) != 0 {
 		t.Errorf("expected empty comments after new review")
 	}
 }
 
 func TestHandleGetReviews(t *testing.T) {
 	srv, _ := setupTestServer(t)
-	// First create a new review to ensure a review file exists
+	// Create a new review and save comment so file exists
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/review/new", nil)
 	srv.engine.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for new review, got %d", w.Code)
+	var resp1 models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("invalid response: %v", err)
 	}
+	id1 := resp1.Data.(map[string]interface{})["reviewID"].(string)
+
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "x"}}, Type: models.DiffTypeWorking})
+	ws := httptest.NewRecorder()
+	reqs, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	reqs.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(ws, reqs)
 
 	// Now list reviews
 	w2 := httptest.NewRecorder()
@@ -250,8 +268,18 @@ func TestHandleGetReviews(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected array data, got %T", resp.Data)
 	}
-	if len(data) == 0 {
-		t.Errorf("expected at least one review item")
+	found := false
+	for _, item := range data {
+		m := item.(map[string]interface{})
+		if m["reviewID"] == id1 {
+			found = true
+			if m["commentCount"].(float64) != 1 {
+				t.Errorf("expected commentCount 1")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected review %s in list", id1)
 	}
 }
 
@@ -268,7 +296,7 @@ func TestHandleSwitchReview(t *testing.T) {
 	id1 := resp1.Data.(map[string]interface{})["reviewID"].(string)
 
 	// Save comment to review1
-	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "in-review1"}}})
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "in-review1"}}, Type: models.DiffTypeWorking})
 	ws := httptest.NewRecorder()
 	reqs, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
 	reqs.Header.Set("Content-Type", "application/json")
@@ -279,7 +307,7 @@ func TestHandleSwitchReview(t *testing.T) {
 	req2, _ := http.NewRequest("POST", "/api/review/new", nil)
 	srv.engine.ServeHTTP(w2, req2)
 	// Save comment to review2
-	body2, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "2", Content: "in-review2"}}})
+	body2, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "2", Content: "in-review2"}}, Type: models.DiffTypeWorking})
 	ws2 := httptest.NewRecorder()
 	reqs2, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body2))
 	reqs2.Header.Set("Content-Type", "application/json")
@@ -303,11 +331,15 @@ func TestHandleSwitchReview(t *testing.T) {
 	if err := json.Unmarshal(w4.Body.Bytes(), &resp4); err != nil {
 		t.Fatalf("invalid response: %v", err)
 	}
-	list, ok := resp4.Data.([]interface{})
-	if !ok || len(list) != 1 {
+	pr, ok := resp4.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	comments, ok := pr["comments"].([]interface{})
+	if !ok || len(comments) != 1 {
 		t.Fatalf("expected 1 comment after switch")
 	}
-	first := list[0].(map[string]interface{})
+	first := comments[0].(map[string]interface{})
 	if first["content"] != "in-review1" {
 		t.Errorf("expected review1 content, got %v", first["content"])
 	}
@@ -320,6 +352,79 @@ func TestHandleSwitchReview(t *testing.T) {
 	srv.engine.ServeHTTP(w5, req5)
 	if w5.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for non-existent review, got %d", w5.Code)
+	}
+}
+
+func TestHandleGetReviewDetail(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// Create and save a review
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest("POST", "/api/review/new", nil)
+	srv.engine.ServeHTTP(w1, req1)
+	var resp1 models.APIResponse
+	if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	id1 := resp1.Data.(map[string]interface{})["reviewID"].(string)
+
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "detail-test"}}, Type: models.DiffTypeWorking})
+	ws := httptest.NewRecorder()
+	reqs, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	reqs.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(ws, reqs)
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/review/detail?id="+id1, nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w2.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	pr, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	comments, ok := pr["comments"].([]interface{})
+	if !ok || len(comments) != 1 {
+		t.Fatalf("expected 1 comment in detail")
+	}
+
+	// non-existent id
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/review/detail?id=bad-id", nil)
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w3.Code)
+	}
+}
+
+func TestHandleGetReviewsFiltersEmpty(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// Create a review but do NOT save comments
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest("POST", "/api/review/new", nil)
+	srv.engine.ServeHTTP(w1, req1)
+
+	// list should not contain empty review
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/reviews", nil)
+	srv.engine.ServeHTTP(w2, req2)
+	var resp models.APIResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data, ok := resp.Data.([]interface{})
+	if !ok {
+		t.Fatalf("expected array data, got %T", resp.Data)
+	}
+	for _, item := range data {
+		m := item.(map[string]interface{})
+		if m["commentCount"].(float64) == 0 {
+			t.Errorf("empty review should be filtered")
+		}
 	}
 }
 

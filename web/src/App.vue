@@ -6,8 +6,6 @@
       :commit-list="commitList"
       :commit-page="commitPage"
       :commit-total-pages="commitTotalPages"
-      :selected-review-i-d="selectedReviewID"
-      :review-list="reviewList"
       :review-label="reviewLabel"
       :saved="saved"
       :export-format="exportFormat"
@@ -16,7 +14,7 @@
       @change-commit-page="changeCommitPage"
       @show-help="showHelp = true"
       @new-review="createNewReview"
-      @switch-review="switchToReview"
+      @show-history="openHistoryModal"
       @update:export-format="exportFormat = $event"
       @do-export="doExport"
       @save-review="saveReview"
@@ -78,6 +76,19 @@
     />
 
     <HelpModal v-if="showHelp" @close="showHelp = false" />
+
+    <ReviewHistoryModal
+      v-if="showHistoryModal"
+      :reviews="reviewList"
+      @close="showHistoryModal = false"
+      @select="onSelectHistoryReview"
+    />
+
+    <ReviewResultModal
+      v-if="historyReviewData"
+      :data="historyReviewData"
+      @close="closeReviewResultModal"
+    />
   </div>
 </template>
 
@@ -87,7 +98,9 @@ import AppHeader from './components/AppHeader.vue'
 import DiffFile from './components/DiffFile.vue'
 import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
-import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviews, exportReview, getCommits, getConfig } from './api/client.js'
+import ReviewHistoryModal from './components/ReviewHistoryModal.vue'
+import ReviewResultModal from './components/ReviewResultModal.vue'
+import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, getReviewDetail, getReviews, exportReview, getCommits, getConfig } from './api/client.js'
 
 const diffType = ref('working')
 const selectedCommitHash = ref('')
@@ -108,12 +121,11 @@ const commitPage = ref(1)
 const commitTotalPages = ref(1)
 const reviewList = ref([])
 
+const showHistoryModal = ref(false)
+const historyReviewData = ref(null)
+
 const commitInfo = computed(() => diffData.value?.commitInfo || null)
 const selectedFile = computed(() => diffData.value?.files[selectedIndex.value] || null)
-const selectedReviewID = computed(() => {
-  if (!reviewLabel.value || !reviewLabel.value.startsWith('Review ID: ')) return ''
-  return reviewLabel.value.replace('Review ID: ', '')
-})
 
 async function loadReviews() {
   try {
@@ -188,25 +200,31 @@ async function createNewReview() {
   }
 }
 
-async function switchToReview(reviewID) {
-  if (!reviewID) return
-  try {
-    await apiSwitchReview(reviewID)
-    comments.value = await getReview()
-    saved.value = true
-    reviewLabel.value = `Review ID: ${reviewID}`
-  } catch (e) {
-    alert('切换 Review 失败: ' + e.message)
-  }
-}
-
 async function saveReview() {
   try {
-    await apiSaveReview(comments.value)
+    await apiSaveReview(comments.value, diffType.value, selectedCommitHash.value)
     saved.value = true
   } catch (e) {
     alert('保存失败: ' + e.message)
   }
+}
+
+function openHistoryModal() {
+  showHistoryModal.value = true
+}
+
+async function onSelectHistoryReview(reviewItem) {
+  showHistoryModal.value = false
+  try {
+    const detail = await getReviewDetail(reviewItem.reviewID)
+    historyReviewData.value = detail
+  } catch (e) {
+    alert('加载 Review 详情失败: ' + e.message)
+  }
+}
+
+function closeReviewResultModal() {
+  historyReviewData.value = null
 }
 
 async function doExport() {
@@ -221,7 +239,8 @@ async function doExport() {
 onMounted(async () => {
   await loadDiff()
   try {
-    comments.value = await getReview()
+    const review = await getReview()
+    comments.value = review.comments || []
   } catch {
     comments.value = []
   }

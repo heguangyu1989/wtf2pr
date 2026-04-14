@@ -36,10 +36,10 @@ export function getReview() {
   return request('/review')
 }
 
-export function saveReview(comments) {
+export function saveReview(comments, type, commit) {
   return request('/review', {
     method: 'POST',
-    body: JSON.stringify({ comments }),
+    body: JSON.stringify({ comments, type, commit }),
   })
 }
 
@@ -56,6 +56,10 @@ export function switchReview(reviewID) {
     method: 'POST',
     body: JSON.stringify({ reviewID }),
   })
+}
+
+export function getReviewDetail(id) {
+  return request(`/review/detail?id=${encodeURIComponent(id)}`)
 }
 
 export function exportReview(format, type, commit) {

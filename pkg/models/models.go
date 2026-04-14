@@ -107,10 +107,27 @@ type Comment struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
-// ReviewItem 历史 review 列表项
-type ReviewItem struct {
-	ReviewID   string `json:"reviewID"`
-	ReviewFile string `json:"reviewFile"`
+// PersistedReview 持久化的 review 记录
+type PersistedReview struct {
+	ReviewID  string        `json:"reviewID"`
+	Type      string        `json:"type"`
+	Commit    string        `json:"commit,omitempty"`
+	CreatedAt int64         `json:"createdAt"`
+	UpdatedAt int64         `json:"updatedAt"`
+	Diff      *DiffResponse `json:"diff,omitempty"`
+	Comments  []Comment     `json:"comments"`
+}
+
+// ReviewListItem 历史 review 列表项
+type ReviewListItem struct {
+	ReviewID     string `json:"reviewID"`
+	ReviewFile   string `json:"reviewFile"`
+	Type         string `json:"type"`
+	Commit       string `json:"commit,omitempty"`
+	CommitMsg    string `json:"commitMsg,omitempty"`
+	CommentCount int    `json:"commentCount"`
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
 }
 
 // SwitchReviewRequest 切换 review 请求
@@ -127,6 +144,8 @@ type NewReviewResponse struct {
 // SaveReviewRequest 保存 review 请求
 type SaveReviewRequest struct {
 	Comments []Comment `json:"comments" binding:"required"`
+	Type     DiffType  `json:"type"`
+	Commit   string    `json:"commit,omitempty"`
 }
 
 // ExportRequest 导出请求

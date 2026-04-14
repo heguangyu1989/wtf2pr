@@ -48,16 +48,7 @@
       <div class="flex-1"></div>
 
       <div class="flex items-center gap-3 text-sm">
-        <select
-          :value="selectedReviewID"
-          class="border rounded px-2 py-1 text-sm w-40 bg-white dark:bg-gray-900"
-          @change="$emit('switchReview', $event.target.value)"
-        >
-          <option value="">切换 Review</option>
-          <option v-for="r in reviewList" :key="r.reviewID" :value="r.reviewID">
-            {{ r.reviewID.substring(0, 8) }}
-          </option>
-        </select>
+        <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50 dark:hover:bg-gray-800" @click="$emit('showHistory')">历史 Review</button>
         <div v-if="reviewLabel" class="text-xs text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
           {{ reviewLabel }}
         </div>
@@ -104,7 +95,7 @@ defineEmits([
   'changeCommitPage',
   'showHelp',
   'newReview',
-  'switchReview',
+  'showHistory',
   'update:exportFormat',
   'doExport',
   'saveReview',

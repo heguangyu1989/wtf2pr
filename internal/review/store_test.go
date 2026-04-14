@@ -22,11 +22,13 @@ func TestNewStore_MemoryOnly(t *testing.T) {
 
 func TestStoreSaveAndGet(t *testing.T) {
 	s := NewStore("")
-	comments := []models.Comment{
-		{ID: "1", FilePath: "a.go", Content: "comment1"},
-		{ID: "2", FilePath: "b.go", Content: "comment2"},
+	pr := &models.PersistedReview{
+		Comments: []models.Comment{
+			{ID: "1", FilePath: "a.go", Content: "comment1"},
+			{ID: "2", FilePath: "b.go", Content: "comment2"},
+		},
 	}
-	s.Save(comments)
+	s.Save(pr)
 	got := s.Get()
 	if len(got) != 2 {
 		t.Fatalf("expected 2 comments, got %d", len(got))
@@ -49,10 +51,12 @@ func TestStoreFilePersistence(t *testing.T) {
 
 	// Create store and save
 	s := NewStore(file)
-	comments := []models.Comment{
-		{ID: "1", FilePath: "a.go", LineKey: "new:1", Content: "hello"},
+	pr := &models.PersistedReview{
+		Comments: []models.Comment{
+			{ID: "1", FilePath: "a.go", LineKey: "new:1", Content: "hello"},
+		},
 	}
-	s.Save(comments)
+	s.Save(pr)
 
 	// Verify file exists
 	if _, err := os.Stat(file); os.IsNotExist(err) {
@@ -71,7 +75,7 @@ func TestStoreClear(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "review.json")
 	s := NewStore(file)
-	s.Save([]models.Comment{{ID: "1", Content: "c1"}})
+	s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "1", Content: "c1"}}})
 	s.Clear()
 	got := s.Get()
 	if len(got) != 0 {
@@ -89,13 +93,13 @@ func TestStoreSwitchFile(t *testing.T) {
 	file1 := filepath.Join(dir, "review_a.json")
 	file2 := filepath.Join(dir, "review_b.json")
 
-	// Pre-create file2 with data
+	// Pre-create file2 with old-format data
 	if err := os.WriteFile(file2, []byte(`[{"id":"2","filePath":"b.go","content":"from-file2"}]`), 0644); err != nil {
 		t.Fatalf("failed to create file2: %v", err)
 	}
 
 	s := NewStore(file1)
-	s.Save([]models.Comment{{ID: "1", Content: "a"}})
+	s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "1", Content: "a"}}})
 
 	// Switch to file2 should load its data
 	s.SwitchFile(file2)
@@ -105,12 +109,26 @@ func TestStoreSwitchFile(t *testing.T) {
 	}
 
 	// Save to new file
-	s.Save([]models.Comment{{ID: "2", Content: "b"}})
+	s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "2", Content: "b"}}})
 
 	// Old file should remain untouched
 	s2 := NewStore(file1)
 	if len(s2.Get()) != 1 || s2.Get()[0].Content != "a" {
 		t.Errorf("old file should keep original data")
+	}
+}
+
+func TestStoreEmptyNotWritten(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "review_empty.json")
+	s := NewStore(file)
+	s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "1", Content: "x"}}})
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		t.Fatalf("expected file to exist with comments")
+	}
+	s.Save(&models.PersistedReview{Comments: []models.Comment{}})
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Errorf("expected file to be removed when comments empty")
 	}
 }
 
@@ -121,7 +139,7 @@ func TestStoreConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			s.Save([]models.Comment{{ID: string(rune('a' + idx)), Content: "test"}})
+			s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: string(rune('a' + idx)), Content: "test"}}})
 			s.Get()
 		}(i)
 	}
