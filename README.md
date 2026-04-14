@@ -60,7 +60,22 @@ go build -o wtf2pr ./cmd/wtf2pr
 ./wtf2pr web --review-id=feature_x
 ```
 
-### 3. 打开浏览器
+### 3. 开发模式运行（前后端分离）
+
+```bash
+# 终端 1：启动后端
+make dev-server
+
+# 终端 2：启动前端（默认监听 127.0.0.1:5173）
+make dev-web
+
+# 自定义前端监听地址和端口
+make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
+```
+
+前端开发服务器会通过 Vite Proxy 将 `/api/*` 请求转发到 `http://localhost:8080`。
+
+### 4. 打开浏览器
 
 访问 `http://localhost:8080`，在左侧选择文件，在右侧 Diff 中点击代码行即可添加 Review。
 
@@ -71,6 +86,7 @@ go build -o wtf2pr ./cmd/wtf2pr
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--port` | `8080` | 服务监听端口 |
+| `--host` | `0.0.0.0` | 服务监听地址（设为 `127.0.0.1` 仅本地访问） |
 | `--workdir` | 当前目录 | Git 工作目录 |
 | `--review-file` | `""` | Review 数据存储的 JSON 文件完整路径 |
 | `--review-id` | `""` | Review ID，用于自动生成默认存储文件名 |

@@ -57,8 +57,8 @@ func (s *Server) setupRoutes() {
 }
 
 // Run 启动服务
-func (s *Server) Run(port int) error {
-	addr := fmt.Sprintf(":%d", port)
+func (s *Server) Run(host string, port int) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
 	return s.engine.Run(addr)
 }
 

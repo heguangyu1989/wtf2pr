@@ -10,3 +10,5 @@ web/node_modules/
 
 # Go vendor (if any)
 vendor/
+
+build/
