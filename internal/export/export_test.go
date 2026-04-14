@@ -200,3 +200,25 @@ func TestLineKeyToDisplay(t *testing.T) {
 		t.Errorf("expected 'new:5'")
 	}
 }
+
+func TestRenderTemplate(t *testing.T) {
+	diff := makeDiff()
+	comments := []models.Comment{
+		{ID: "1", FilePath: "main.go", LineKey: "new:2", Content: "Add fmt import"},
+	}
+	tpl := "Type: {{.Type}}\n{{range .Files}}{{.Path}}: {{len .Comments}} comments\n{{end}}"
+	out, err := RenderTemplate(diff, comments, tpl)
+	t.Log(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Type: commit") {
+		t.Errorf("expected type in template output")
+	}
+	if !strings.Contains(out, "main.go: 1 comments") {
+		t.Errorf("expected file comment count in template output")
+	}
+	if strings.Contains(out, "readme.md") {
+		t.Errorf("expected readme.md to be omitted")
+	}
+}

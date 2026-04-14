@@ -24,7 +24,7 @@ ensure-dist:
 ##
 dev-server: ensure-dist
 	@echo "Starting backend server..."
-	@go run ./cmd/wtf2pr web --workdir=. --port=8322 --host=0.0.0.0
+	@go run ./cmd/wtf2pr web --workdir=. --port=8322 --host=0.0.0.0 --workdir /mnt/data/code/dev-workbench
 
 ## embed: 构建前端并将产物嵌入 Go 二进制
 ##

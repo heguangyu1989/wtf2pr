@@ -58,6 +58,8 @@ func (s *Server) setupRoutes() {
 		api.POST("/review/new", s.handleNewReview)
 		api.POST("/review/switch", s.handleSwitchReview)
 		api.POST("/export", s.handleExport)
+		api.GET("/template", s.handleGetTemplate)
+		api.POST("/template", s.handleSaveTemplate)
 	}
 
 	// 静态文件服务
@@ -371,7 +373,19 @@ func (s *Server) handleExport(c *gin.Context) {
 		comments = s.store.Get()
 	}
 
-	content, err := export.Export(diff, comments, req.Format)
+	var content string
+	var err error
+	if req.Format == models.ExportFormatTemplate {
+		tplPath := s.templatePath()
+		tplBytes, rerr := os.ReadFile(tplPath)
+		if rerr != nil {
+			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "template not found, please configure in template tab"})
+			return
+		}
+		content, err = export.RenderTemplate(diff, comments, string(tplBytes))
+	} else {
+		content, err = export.Export(diff, comments, req.Format)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -381,6 +395,36 @@ func (s *Server) handleExport(c *gin.Context) {
 		Format:  req.Format,
 		Content: content,
 	}})
+}
+
+func (s *Server) templatePath() string {
+	dir := filepath.Dir(s.reviewFile)
+	if dir == "." || dir == "" {
+		dir, _ = os.Getwd()
+	}
+	return filepath.Join(dir, "export.tpl")
+}
+
+func (s *Server) handleGetTemplate(c *gin.Context) {
+	content, _ := os.ReadFile(s.templatePath())
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
+		"content": string(content),
+	}})
+}
+
+func (s *Server) handleSaveTemplate(c *gin.Context) {
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	if err := os.WriteFile(s.templatePath(), []byte(req.Content), 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
 }
 
 func getTimestamp() int64 {

@@ -451,3 +451,46 @@ func TestHandleExport(t *testing.T) {
 		t.Errorf("expected markdown format")
 	}
 }
+
+func TestHandleGetTemplate(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/template", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected object data")
+	}
+	if _, ok := data["content"]; !ok {
+		t.Errorf("expected content field")
+	}
+}
+
+func TestHandleSaveTemplate(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	tplPath := filepath.Join(dir, ".wtf2pr", "export.tpl")
+	_ = os.MkdirAll(filepath.Dir(tplPath), 0755)
+	srv.reviewFile = tplPath
+	body, _ := json.Marshal(map[string]string{"content": "{{.Type}}"})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/template", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	b, err := os.ReadFile(tplPath)
+	if err != nil {
+		t.Fatalf("failed to read template file: %v", err)
+	}
+	if string(b) != "{{.Type}}" {
+		t.Errorf("expected saved template content")
+	}
+}

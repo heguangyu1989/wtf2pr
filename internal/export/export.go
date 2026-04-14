@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"text/template"
 
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
 
 // Export 将 diff 和 review 导出为指定格式（仅导出含 review 的核心信息，避免冗余 diff 原文）
 func Export(diff *models.DiffResponse, comments []models.Comment, format models.ExportFormat) (string, error) {
-	data := buildReviewExport(diff, comments)
+	data := BuildReviewExport(diff, comments)
 	switch format {
 	case models.ExportFormatMarkdown:
 		return exportMarkdown(data), nil
@@ -25,21 +26,23 @@ func Export(diff *models.DiffResponse, comments []models.Comment, format models.
 	}
 }
 
-// reviewExport 精简的 review 导出结构
-type reviewExport struct {
+// ReviewExport 精简的 review 导出结构，用于模板渲染和序列化
+type ReviewExport struct {
 	Type       string             `json:"type" xml:"Type"`
 	CommitInfo *models.CommitInfo `json:"commitInfo,omitempty" xml:"CommitInfo,omitempty"`
-	Files      []fileReviewExport `json:"files" xml:"Files>File"`
+	Files      []FileReviewExport `json:"files" xml:"Files>File"`
 }
 
-type fileReviewExport struct {
+// FileReviewExport 文件级别的导出结构
+type FileReviewExport struct {
 	Path      string          `json:"path" xml:"Path"`
 	IsNew     bool            `json:"isNew" xml:"IsNew"`
 	IsDeleted bool            `json:"isDeleted" xml:"IsDeleted"`
-	Comments  []commentExport `json:"comments" xml:"Comments>Comment"`
+	Comments  []CommentExport `json:"comments" xml:"Comments>Comment"`
 }
 
-type commentExport struct {
+// CommentExport 评论导出结构
+type CommentExport struct {
 	LineKey    string `json:"lineKey" xml:"LineKey"`
 	LineNo     string `json:"lineNo" xml:"LineNo"`
 	Content    string `json:"content" xml:"Content"`
@@ -47,12 +50,12 @@ type commentExport struct {
 	HunkHeader string `json:"hunkHeader,omitempty" xml:"HunkHeader,omitempty"`
 }
 
-// buildReviewExport 仅构造包含 review comment 的文件信息，并提取对应代码行与 hunk 上下文
-func buildReviewExport(diff *models.DiffResponse, comments []models.Comment) *reviewExport {
-	result := &reviewExport{
+// BuildReviewExport 构造包含 review comment 的文件信息，并提取对应代码行与 hunk 上下文
+func BuildReviewExport(diff *models.DiffResponse, comments []models.Comment) *ReviewExport {
+	result := &ReviewExport{
 		Type:       string(diff.Type),
 		CommitInfo: diff.CommitInfo,
-		Files:      []fileReviewExport{},
+		Files:      []FileReviewExport{},
 	}
 	if len(comments) == 0 {
 		return result
@@ -75,15 +78,15 @@ func buildReviewExport(diff *models.DiffResponse, comments []models.Comment) *re
 			continue
 		}
 
-		fre := fileReviewExport{
+		fre := FileReviewExport{
 			Path:      path,
 			IsNew:     file.IsNew,
 			IsDeleted: file.IsDeleted,
-			Comments:  make([]commentExport, 0, len(cmts)),
+			Comments:  make([]CommentExport, 0, len(cmts)),
 		}
 		for _, c := range cmts {
 			codeLine, hunkHeader := findCodeContext(file, c.LineKey)
-			fre.Comments = append(fre.Comments, commentExport{
+			fre.Comments = append(fre.Comments, CommentExport{
 				LineKey:    c.LineKey,
 				LineNo:     lineKeyToDisplay(c.LineKey),
 				Content:    c.Content,
@@ -95,6 +98,20 @@ func buildReviewExport(diff *models.DiffResponse, comments []models.Comment) *re
 	}
 
 	return result
+}
+
+// RenderTemplate 使用用户自定义的 text/template 模板渲染导出内容
+func RenderTemplate(diff *models.DiffResponse, comments []models.Comment, tplContent string) (string, error) {
+	data := BuildReviewExport(diff, comments)
+	t, err := template.New("export").Parse(tplContent)
+	if err != nil {
+		return "", err
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // findCodeContext 根据 lineKey 在 fileDiff 中定位对应代码行与 hunk header
@@ -135,7 +152,7 @@ func lineKeyToDisplay(lineKey string) string {
 	return lineKey
 }
 
-func exportMarkdown(data *reviewExport) string {
+func exportMarkdown(data *ReviewExport) string {
 	var b strings.Builder
 	b.WriteString("# Review Report\n\n")
 	b.WriteString(fmt.Sprintf("**Type:** %s\n\n", data.Type))
@@ -182,7 +199,7 @@ func exportMarkdown(data *reviewExport) string {
 	return b.String()
 }
 
-func exportJSON(data *reviewExport) (string, error) {
+func exportJSON(data *ReviewExport) (string, error) {
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return "", err
@@ -190,7 +207,7 @@ func exportJSON(data *reviewExport) (string, error) {
 	return string(b), nil
 }
 
-func exportXML(data *reviewExport) (string, error) {
+func exportXML(data *ReviewExport) (string, error) {
 	b, err := xml.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return "", err

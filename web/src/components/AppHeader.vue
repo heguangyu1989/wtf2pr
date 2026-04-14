@@ -23,6 +23,7 @@
           <option value="markdown">Markdown</option>
           <option value="json">JSON</option>
           <option value="xml">XML</option>
+          <option value="template">Template</option>
         </select>
         <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50 dark:hover:bg-gray-800" @click="$emit('doExport')">导出</button>
         <button class="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700" @click="$emit('saveReview')">保存 Review</button>

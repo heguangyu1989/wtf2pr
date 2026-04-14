@@ -47,6 +47,7 @@ const (
 	ExportFormatMarkdown ExportFormat = "markdown"
 	ExportFormatJSON     ExportFormat = "json"
 	ExportFormatXML      ExportFormat = "xml"
+	ExportFormatTemplate ExportFormat = "template"
 )
 
 // DiffRequest 请求 diff 的参数
@@ -152,7 +153,7 @@ type SaveReviewRequest struct {
 
 // ExportRequest 导出请求
 type ExportRequest struct {
-	Format   ExportFormat `json:"format" binding:"required,oneof=markdown json xml"`
+	Format   ExportFormat `json:"format" binding:"required,oneof=markdown json xml template"`
 	Type     DiffType     `json:"type" binding:"required"`
 	Commit   string       `json:"commit,omitempty"`
 	ReviewID string       `json:"reviewID,omitempty"`

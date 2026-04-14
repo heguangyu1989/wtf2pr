@@ -29,54 +29,60 @@
     <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4 overflow-hidden">
       <!-- Working -->
       <template v-if="activeTab === 'working'">
-        <DiffViewer
-          :diff-data="diffData"
-          :comments="[]"
-          :loading="loading"
-          :error="error"
-          :readonly="true"
-        />
+        <div class="h-full">
+          <DiffViewer
+            :diff-data="diffData"
+            :comments="[]"
+            :loading="loading"
+            :error="error"
+            :readonly="true"
+          />
+        </div>
       </template>
 
       <!-- Commit -->
       <template v-if="activeTab === 'commit'">
-        <div class="mb-3 flex flex-wrap items-center gap-2 shrink-0">
-          <select
-            v-model="selectedCommitHash"
-            class="border rounded px-2 py-1 text-sm w-64 bg-white dark:bg-gray-900"
-          >
-            <option value="">选择 Commit</option>
-            <option v-for="c in commitList" :key="c.hash" :value="c.hash">
-              {{ c.hash.substring(0, 7) }} - {{ c.message }}
-            </option>
-          </select>
-          <div class="flex items-center gap-1 text-sm">
-            <button
-              class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
-              :disabled="commitPage <= 1"
-              @click="changeCommitPage(-1)"
+        <div class="flex flex-col h-full gap-3">
+          <div class="flex flex-wrap items-center gap-2 shrink-0">
+            <select
+              v-model="selectedCommitHash"
+              class="border rounded px-2 py-1 text-sm w-64 bg-white dark:bg-gray-900"
             >
-              上一页
-            </button>
-            <span class="text-xs text-gray-500 whitespace-nowrap">{{ commitPage }} / {{ commitTotalPages }}</span>
-            <button
-              class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
-              :disabled="commitPage >= commitTotalPages"
-              @click="changeCommitPage(1)"
-            >
-              下一页
-            </button>
+              <option value="">选择 Commit</option>
+              <option v-for="c in commitList" :key="c.hash" :value="c.hash">
+                {{ c.hash.substring(0, 7) }} - {{ c.message }}
+              </option>
+            </select>
+            <div class="flex items-center gap-1 text-sm">
+              <button
+                class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
+                :disabled="commitPage <= 1"
+                @click="changeCommitPage(-1)"
+              >
+                上一页
+              </button>
+              <span class="text-xs text-gray-500 whitespace-nowrap">{{ commitPage }} / {{ commitTotalPages }}</span>
+              <button
+                class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
+                :disabled="commitPage >= commitTotalPages"
+                @click="changeCommitPage(1)"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+          <div class="flex-1 overflow-hidden">
+            <DiffViewer
+              :diff-data="diffData"
+              :comments="comments"
+              :loading="loading"
+              :error="error"
+              :readonly="false"
+              :commit-info="diffData?.commitInfo"
+              @update:comments="onCommentsUpdate"
+            />
           </div>
         </div>
-        <DiffViewer
-          :diff-data="diffData"
-          :comments="comments"
-          :loading="loading"
-          :error="error"
-          :readonly="false"
-          :commit-info="diffData?.commitInfo"
-          @update:comments="onCommentsUpdate"
-        />
       </template>
 
       <!-- History -->
@@ -125,6 +131,63 @@
           </div>
         </div>
       </template>
+
+      <!-- Template -->
+      <template v-if="activeTab === 'template'">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
+          <div class="lg:col-span-2 h-full flex flex-col">
+            <div class="mb-2 flex items-center justify-between">
+              <div class="text-sm font-medium">模板内容（存储在 ~/.wtf2pr/export.tpl）</div>
+              <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="onSaveTemplate">保存模板</button>
+            </div>
+            <textarea
+              v-model="templateContent"
+              class="flex-1 w-full border rounded p-3 text-sm font-mono bg-white dark:bg-gray-900"
+              placeholder="输入 Go text/template 模板..."
+            />
+          </div>
+          <div class="lg:col-span-1 h-full overflow-y-auto border rounded-lg p-4 bg-gray-50 dark:bg-gray-800 text-sm">
+            <div class="font-medium mb-2">帮助说明</div>
+            <p class="text-xs text-gray-500 mb-3">系统使用 Go 的 <code>text/template</code> 渲染模板，可用字段如下：</p>
+            <pre v-pre class="text-xs bg-white dark:bg-gray-900 border rounded p-2 overflow-x-auto mb-3">.Type          // "working" 或 "commit"
+.CommitInfo    // 可能为 nil
+  .Hash
+  .Author
+  .Date
+  .Message
+.Files          // 仅包含有 review comment 的文件
+  .Path
+  .IsNew
+  .IsDeleted
+  .Comments
+    .LineKey    // "old:12" / "new:15" / ""
+    .LineNo     // 展示用的行号字符串
+    .Content
+    .CodeLine   // 对应行的代码内容
+    .HunkHeader // "@@ -1,2 +1,3 @@"</pre>
+            <div class="font-medium mb-2">示例模板</div>
+            <pre v-pre class="text-xs bg-white dark:bg-gray-900 border rounded p-2 overflow-x-auto"># Review Report
+
+Type: {{ .Type }}
+
+{{if .CommitInfo}}Commit: {{.CommitInfo.Hash}}
+Author: {{.CommitInfo.Author}}
+Date: {{.CommitInfo.Date}}
+Message: {{.CommitInfo.Message}}
+{{end}}
+{{range .Files}}
+## {{.Path}}
+{{if .IsNew}}(New file){{end}}
+{{if .IsDeleted}}(Deleted file){{end}}
+{{range .Comments}}
+- {{.LineNo}}: {{.Content}}
+{{if .CodeLine}}  Code: {{.CodeLine}}
+{{end}}
+{{end}}
+{{end}}</pre>
+          </div>
+        </div>
+      </template>
     </main>
 
     <ExportModal
@@ -140,6 +203,10 @@
       @close="closeReviewResultModal"
       @export="onExportHistoryReview"
     />
+
+    <footer class="shrink-0 border-t bg-white dark:bg-gray-900 px-4 py-2 text-xs text-gray-500 text-center">
+      wtf2pr — code review made simple
+    </footer>
   </div>
 </template>
 
@@ -150,12 +217,13 @@ import DiffViewer from './components/DiffViewer.vue'
 import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
 import ReviewResultModal from './components/ReviewResultModal.vue'
-import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getCommits, getConfig } from './api/client.js'
+import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getCommits, getConfig, getTemplate, saveTemplate as apiSaveTemplate } from './api/client.js'
 
 const tabs = [
   { key: 'working', label: 'Working tree' },
   { key: 'commit', label: 'Commit' },
   { key: 'history', label: '历史 Review' },
+  { key: 'template', label: '导出模板' },
 ]
 
 const activeTab = ref('working')
@@ -177,6 +245,7 @@ const commitTotalPages = ref(1)
 const reviewList = ref([])
 
 const historyReviewData = ref(null)
+const templateContent = ref('')
 
 watch(activeTab, async (tab) => {
   if (tab === 'working') {
@@ -200,6 +269,8 @@ watch(activeTab, async (tab) => {
     }
   } else if (tab === 'history') {
     await loadReviews()
+  } else if (tab === 'template') {
+    await loadTemplate()
   }
 })
 
@@ -331,6 +402,24 @@ async function onExportHistoryReview(format) {
     showExport.value = true
   } catch (e) {
     alert('导出失败: ' + e.message)
+  }
+}
+
+async function loadTemplate() {
+  try {
+    const res = await getTemplate()
+    templateContent.value = res.content || ''
+  } catch {
+    templateContent.value = ''
+  }
+}
+
+async function onSaveTemplate() {
+  try {
+    await apiSaveTemplate(templateContent.value)
+    alert('模板保存成功')
+  } catch (e) {
+    alert('模板保存失败: ' + e.message)
   }
 }
 

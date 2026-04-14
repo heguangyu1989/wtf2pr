@@ -68,3 +68,14 @@ export function exportReview(format, type, commit, reviewID = '') {
     body: JSON.stringify({ format, type, commit, reviewID }),
   })
 }
+
+export function getTemplate() {
+  return request('/template')
+}
+
+export function saveTemplate(content) {
+  return request('/template', {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
