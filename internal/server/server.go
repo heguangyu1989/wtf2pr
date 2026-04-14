@@ -1,7 +1,6 @@
 package server
 
 import (
-	"embed"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -19,11 +18,11 @@ type Server struct {
 	store    *review.Store
 	workDir    string
 	reviewFile string
-	staticFS   embed.FS
+	staticFS   fs.FS
 }
 
 // NewServer 创建 server
-func NewServer(workDir string, staticFS embed.FS, reviewFile string) *Server {
+func NewServer(workDir string, staticFS fs.FS, reviewFile string) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
