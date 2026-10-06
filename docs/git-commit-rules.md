@@ -24,7 +24,7 @@
 
 
 ```bash
-{type: must} {breaking: optional} {subject: must} {jiralink: should}
+{type: must} : {breaking: optional} {subject: must} {jiralink: should}
 // 空一行
 {body: optional} 
 ```
