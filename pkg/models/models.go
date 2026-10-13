@@ -62,6 +62,7 @@ type DiffResponse struct {
 	Commit     string      `json:"commit,omitempty"`
 	CommitInfo *CommitInfo `json:"commitInfo,omitempty"`
 	Files      []FileDiff  `json:"files"`
+	Truncated  bool        `json:"truncated,omitempty"` // 输出超限被截断（巨型 diff）
 }
 
 // CommitInfo commit 信息

@@ -410,11 +410,12 @@ func (s *Server) handleBrowse(c *gin.Context) {
 		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "path is outside the allowed directories: " + abs})
 		return
 	}
-	entries, err := os.ReadDir(abs)
+	f, err := os.Open(abs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "cannot read directory: " + err.Error()})
 		return
 	}
+	defer f.Close()
 
 	resp := models.BrowseResponse{
 		Path:  abs,
@@ -424,21 +425,35 @@ func (s *Server) handleBrowse(c *gin.Context) {
 	if parent := filepath.Dir(abs); parent != abs && config.IsAllowed(s.allowedDirs, parent) {
 		resp.Parent = parent
 	}
+	// 流式分批读取，避免巨型目录一次性全部物化；截断时列表为目录序前 500 条（局部排序）
 	const maxEntries = 500
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
+	const batchSize = 128
+	for len(resp.Dirs) < maxEntries {
+		batch, rerr := f.ReadDir(batchSize)
+		for _, entry := range batch {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			full := filepath.Join(abs, name)
+			isDir := entry.IsDir()
+			if !isDir && entry.Type()&os.ModeSymlink != 0 {
+				// 符号链接需 stat 跟随，确认是否指向目录；受限模式下越界链接在切换/进入时被 IsAllowed 拦截
+				if info, serr := os.Stat(full); serr == nil {
+					isDir = info.IsDir()
+				}
+			}
+			if !isDir {
+				continue
+			}
+			resp.Dirs = append(resp.Dirs, models.DirEntry{Name: name, Path: full, IsGit: git.HasGitDir(full)})
+			if len(resp.Dirs) >= maxEntries {
+				resp.Truncated = true
+				break
+			}
 		}
-		full := filepath.Join(abs, name)
-		// os.Stat 跟随符号链接，确保指向目录的链接也能展示；受限模式下越界链接在切换/进入时被 IsAllowed 拦截
-		info, err := os.Stat(full)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		resp.Dirs = append(resp.Dirs, models.DirEntry{Name: name, Path: full, IsGit: git.HasGitDir(full)})
-		if len(resp.Dirs) >= maxEntries {
-			resp.Truncated = true
+		if rerr != nil {
+			// io.EOF 表示读完；分批读取的其他错误已体现在已收集的结果中
 			break
 		}
 	}
@@ -592,46 +607,64 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 	dir := s.getStorageDir()
 	entries, err := os.ReadDir(dir)
 	if err == nil {
+		// 轻量解析：只取列表所需字段，避免把内嵌 diff 全部物化进内存
+		var hashes []string
 		for _, entry := range entries {
 			name := entry.Name()
-			if strings.HasPrefix(name, "review_") && strings.HasSuffix(name, ".json") {
-				id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
-				item := models.ReviewListItem{
-					ReviewID:   id,
-					ReviewFile: name,
+			if !strings.HasPrefix(name, "review_") || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
+			item := models.ReviewListItem{
+				ReviewID:   id,
+				ReviewFile: name,
+			}
+			fp := filepath.Join(dir, name)
+			if data, err := os.ReadFile(fp); err == nil {
+				var pr struct {
+					Type      string           `json:"type"`
+					Commit    string           `json:"commit"`
+					CreatedAt int64            `json:"createdAt"`
+					UpdatedAt int64            `json:"updatedAt"`
+					Comments  []models.Comment `json:"comments"`
+					Diff      *struct {
+						CommitInfo *models.CommitInfo `json:"commitInfo"`
+					} `json:"diff"`
 				}
-				// 尝试读取元信息
-				fp := filepath.Join(dir, name)
-				if data, err := os.ReadFile(fp); err == nil {
-					var pr models.PersistedReview
-					if err := json.Unmarshal(data, &pr); err == nil {
-						item.Type = pr.Type
-						item.Commit = strings.TrimSpace(pr.Commit)
-						if item.Type == "" && item.Commit != "" {
-							item.Type = string(models.DiffTypeCommit)
-						} else if item.Type == "" {
-							item.Type = string(models.DiffTypeWorking)
-						}
-						item.CommentCount = len(pr.Comments)
-						item.CreatedAt = pr.CreatedAt
-						item.UpdatedAt = pr.UpdatedAt
-						if pr.Diff != nil && pr.Diff.CommitInfo != nil {
-							item.CommitMsg = pr.Diff.CommitInfo.Message
-						}
-						if item.Type == string(models.DiffTypeCommit) && item.Commit != "" {
-							item.CommitExists = git.CommitExists(s.getWorkDir(), item.Commit)
-						}
-					} else {
-						// old format: []Comment
-						var comments []models.Comment
-						if err := json.Unmarshal(data, &comments); err == nil {
-							item.CommentCount = len(comments)
-						}
+				if err := json.Unmarshal(data, &pr); err == nil {
+					item.Type = pr.Type
+					item.Commit = strings.TrimSpace(pr.Commit)
+					if item.Type == "" && item.Commit != "" {
+						item.Type = string(models.DiffTypeCommit)
+					} else if item.Type == "" {
+						item.Type = string(models.DiffTypeWorking)
+					}
+					item.CommentCount = len(pr.Comments)
+					item.CreatedAt = pr.CreatedAt
+					item.UpdatedAt = pr.UpdatedAt
+					if pr.Diff != nil && pr.Diff.CommitInfo != nil {
+						item.CommitMsg = pr.Diff.CommitInfo.Message
+					}
+				} else {
+					// old format: []Comment
+					var comments []models.Comment
+					if err := json.Unmarshal(data, &comments); err == nil {
+						item.CommentCount = len(comments)
 					}
 				}
-				if item.CommentCount > 0 {
-					items = append(items, item)
+			}
+			if item.CommentCount > 0 {
+				if item.Type == string(models.DiffTypeCommit) && item.Commit != "" {
+					hashes = append(hashes, item.Commit)
 				}
+				items = append(items, item)
+			}
+		}
+		// 批量校验 commit 是否存在（单次 git 子进程，避免 N+1）
+		exists := git.CommitsExist(s.getWorkDir(), hashes)
+		for i := range items {
+			if items[i].Type == string(models.DiffTypeCommit) && items[i].Commit != "" {
+				items[i].CommitExists = exists[items[i].Commit]
 			}
 		}
 	}

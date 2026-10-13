@@ -57,10 +57,14 @@ go test ./internal/server/ -v
 | `TestReadUntrackedFileAsDiff_Binary` | 验证未跟踪二进制文件识别为 `IsBinary=true` |
 | `TestReadUntrackedFileAsDiff_NotFound` | 验证读取不存在的未跟踪文件返回错误 |
 | `TestReadUntrackedFileAsDiff_SymlinkSkipped` | 验证指向仓库外的符号链接被拒绝读取（防越界任意文件读） |
+| `TestReadUntrackedFileAsDiff_Oversize` | 验证超过大小上限的未跟踪文件按二进制占位处理（不全量读入内存） |
 | `TestGetUntrackedFiles` | 调用 `git ls-files` 接口，确保无 panic |
 | `TestValidateCommitRef` | 验证 commit 引用白名单：合法 rev（HEAD~3、分支、hash）放行，选项注入（`--output=` 等）拒绝 |
 | `TestGetCommitDiff_RejectsOptionInjection` | 验证选项注入不产生任意文件写 |
 | `TestCommitExists_RejectsInvalidRef` | 验证非法引用返回 false |
+| `TestCommitsExistBatch` | 验证批量 commit 存在性检查（单次 `git cat-file --batch-check`），含不存在与非法引用 |
+| `TestRunGitCappedTruncation` | 验证 git 输出超限截断到最后完整行且仍可解析，恢复上限后完整输出 |
+| `TestGetWorkingDiffTruncatedFlag` | 验证巨型 working diff 时 `DiffResponse.Truncated=true` |
 
 ---
 
@@ -141,6 +145,7 @@ go test ./internal/server/ -v
 | `TestHandleGetWorkdir` | 验证返回当前 workDir 与 workspace 列表（含 current 标记） |
 | `TestWorkspaceDataIsolation` | 验证两个工作目录的评论数据互不可见 |
 | `TestHandleBrowse` | 验证目录浏览（隐藏目录与文件被过滤、parent 计算、无效路径 400） |
+| `TestHandleBrowseTruncated` | 验证超过 500 个目录时流式读取截断并标记 `truncated=true` |
 | `TestRestrictedSwitchWorkdir` / `TestRestrictedBrowse` / `TestRestrictedWorkdirInfo` | 验证 allowed_dirs 受限模式下的放行/拒绝与信息标记 |
 | `TestWorkspaceIDStable` | 验证相对路径/符号链接与绝对路径产生相同 workspace ID |
 
@@ -161,5 +166,5 @@ go test ./internal/server/ -v
 ## 测试统计
 
 - **总测试包数**：5 个
-- **总测试函数**：77 个
+- **总测试函数**：82 个
 - **全部通过状态**：✅ `PASS`（`go test -race -count=1 ./internal/...`）

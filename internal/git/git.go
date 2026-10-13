@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,44 @@ import (
 
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
+
+// maxGitOutputBytes 限制单次 git 命令输出大小，防止巨型 diff 撑爆内存（var 以便测试调小）
+var maxGitOutputBytes = int64(20 << 20) // 20MB
+
+// maxUntrackedFileBytes 限制未跟踪文件的读取大小，超限按二进制占位处理（var 以便测试调小）
+var maxUntrackedFileBytes = int64(1 << 20) // 1MB
+
+// runGitCapped 执行 git 命令并限制输出大小；超限截断到最后一个完整行并返回 truncated=true
+func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workDir
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+	buf, rerr := io.ReadAll(io.LimitReader(stdout, maxGitOutputBytes+1))
+	truncated := int64(len(buf)) > maxGitOutputBytes
+	werr := cmd.Wait()
+	if truncated {
+		// 截断到最后一个完整行，避免半截行进入解析器；git 因管道关闭退出属预期
+		if i := bytes.LastIndexByte(buf[:maxGitOutputBytes], '\n'); i >= 0 {
+			buf = buf[:i+1]
+		} else {
+			buf = buf[:maxGitOutputBytes]
+		}
+		return buf, true, nil
+	}
+	if rerr != nil {
+		return nil, false, rerr
+	}
+	if werr != nil {
+		return nil, false, fmt.Errorf("git %s failed: %w", args[0], werr)
+	}
+	return buf, false, nil
+}
 
 // GetDiff 获取 git diff 数据
 func GetDiff(workDir string, req models.DiffRequest) (*models.DiffResponse, error) {
@@ -23,9 +62,7 @@ func GetDiff(workDir string, req models.DiffRequest) (*models.DiffResponse, erro
 
 func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 	// 1. 获取所有已跟踪文件的未提交变更（包含 staged + unstaged）
-	cmd := exec.Command("git", "diff", "HEAD")
-	cmd.Dir = workDir
-	out, err := cmd.Output()
+	out, truncated, err := runGitCapped(workDir, "diff", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("git diff failed: %w", err)
 	}
@@ -44,8 +81,9 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 	}
 
 	return &models.DiffResponse{
-		Type:  models.DiffTypeWorking,
-		Files: files,
+		Type:      models.DiffTypeWorking,
+		Files:     files,
+		Truncated: truncated,
 	}, nil
 }
 
@@ -70,9 +108,7 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 	}
 
 	// 获取 diff（选项需在 --end-of-options 之前）
-	diffCmd := exec.Command("git", "show", "--format=", "-p", "--end-of-options", commit)
-	diffCmd.Dir = workDir
-	diffOut, err := diffCmd.Output()
+	diffOut, truncated, err := runGitCapped(workDir, "show", "--format=", "-p", "--end-of-options", commit)
 	if err != nil {
 		return nil, fmt.Errorf("git show diff failed: %w", err)
 	}
@@ -85,6 +121,7 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 		Commit:     commit,
 		CommitInfo: commitInfo,
 		Files:      files,
+		Truncated:  truncated,
 	}, nil
 }
 
@@ -161,17 +198,39 @@ func getUntrackedFiles(workDir string) ([]string, error) {
 
 // CommitExists 检查指定的 commit hash 是否存在于当前仓库且类型为 commit
 func CommitExists(workDir, hash string) bool {
-	hash = strings.TrimSpace(hash)
-	if err := validateCommitRef(hash); err != nil {
-		return false
+	return CommitsExist(workDir, []string{hash})[hash]
+}
+
+// CommitsExist 批量检查多个 commit 是否存在（单次 git cat-file --batch-check 调用，避免 N+1 子进程）
+func CommitsExist(workDir string, hashes []string) map[string]bool {
+	result := make(map[string]bool, len(hashes))
+	var valid []string
+	for _, h := range hashes {
+		h = strings.TrimSpace(h)
+		if err := validateCommitRef(h); err != nil {
+			result[h] = false
+			continue
+		}
+		valid = append(valid, h)
 	}
-	cmd := exec.Command("git", "cat-file", "-t", "--end-of-options", hash)
+	if len(valid) == 0 {
+		return result
+	}
+	cmd := exec.Command("git", "cat-file", "--batch-check")
 	cmd.Dir = workDir
+	cmd.Stdin = strings.NewReader(strings.Join(valid, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return result
 	}
-	return strings.TrimSpace(string(out)) == "commit"
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i, h := range valid {
+		if i < len(lines) {
+			parts := strings.Fields(lines[i])
+			result[h] = len(parts) >= 2 && parts[1] == "commit"
+		}
+	}
+	return result
 }
 
 // commitRefPattern 合法的 commit 引用（hash/分支/tag/HEAD~3 等 rev 形式），拒绝以 "-" 开头防止选项注入。
@@ -215,6 +274,15 @@ func readUntrackedFileAsDiff(workDir, filePath string) (models.FileDiff, error) 
 	}
 	if !info.Mode().IsRegular() {
 		return models.FileDiff{}, fmt.Errorf("not a regular file: %s", filePath)
+	}
+	// 超限文件不读入内存，按二进制占位展示
+	if info.Size() > maxUntrackedFileBytes {
+		return models.FileDiff{
+			OldFile:  "",
+			NewFile:  filePath,
+			IsNew:    true,
+			IsBinary: true,
+		}, nil
 	}
 	data, err := os.ReadFile(fullPath)
 	if err != nil {

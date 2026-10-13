@@ -74,6 +74,8 @@ func main() {
 					fmt.Fprintf(os.Stderr, "failed to generate token: %v\n", err)
 					os.Exit(1)
 				}
+			} else if len(token) < 16 {
+				fmt.Fprintf(os.Stderr, "warning: configured token is short (%d chars), recommend at least 16\n", len(token))
 			}
 
 			allowedDirs, err := cfg.ResolvedAllowedDirs()
@@ -97,6 +99,7 @@ func main() {
 			})
 			fmt.Printf("Starting server at http://%s:%d (workdir: %s)\n", host, port, workDir)
 			fmt.Printf("Access token: %s\n", token)
+			fmt.Println("Keep this token private; it grants full access to the web API.")
 			if len(allowedDirs) > 0 {
 				fmt.Printf("Path restriction enabled (%s), allowed dirs:\n", configFile)
 				for _, dir := range allowedDirs {

@@ -13,17 +13,17 @@
       {"repo": "wtf2pr", "base": "main", "branch": "feat/workspace-auth-ui", "stat": "25 文件 +2260/-339（3 commits）+ 修复 19 文件 +531/-239", "commits": "81e8d56/32565ba/0970533"}
     ],
     "out_of_scope": "main 分支存量行为（reviews N+1、diff 无界读）登记为技术债，不在本分支处理",
-    "verdict": "分支包含 3 个 Critical 安全/数据问题（git 选项注入任意文件写、符号链接任意文件读、commit 切换评论错位覆盖）与 1 个迁移死代码，均已修复并配实证测试；两轮 fresh-eyes 复查又捕获修复引入的 watcher 死循环（Critical）并闭环。当前形态可合并，4 项安全/性能语义事项待人类拍板。",
-    "verdict_level": "warn"
+    "verdict": "分支包含 3 个 Critical 安全/数据问题（git 选项注入任意文件写、符号链接任意文件读、commit 切换评论错位覆盖）与 1 个迁移死代码，均已修复并配实证测试；两轮 fresh-eyes 复查又捕获修复引入的 watcher 死循环（Critical）并闭环。Q1-Q4 人类决策已执行（弱 token 告警、安全提示、CORS 保持、性能技术债清零）。当前形态可合并。",
+    "verdict_level": "ok"
   },
   "summary_rows": [
-    {"cells": ["wtf2pr（5 路 + 2 路复查）", "3（已全部修复）", "4", "12（9 修/2 保持/1 技术债）", "◐ 修复完成，待确认项人类拍板后可合并"]}
+    {"cells": ["wtf2pr（5 路 + 2 路复查）", "3（已全部修复）", "4（已决策执行）", "12（11 修/1 保持）", "✓ 可合并"]}
   ],
   "confirmations": [
-    {"id": "Q1", "title": "弱 token 无告警：配置文件允许 token: \"123\" 这类弱值", "background": "internal/server/server.go:212-233 authMiddleware 只比较不评估强度；随机 128-bit token 无暴破风险，但用户自配弱值会显著降低防护", "options": "A. 配置 token 长度 <16 时 stderr 告警（倾向，纯提示不改行为）；B. 保持现状", "status": "pending"},
-    {"id": "Q2", "title": "token 明文打印到 stdout 且经 query 传递", "background": "cmd/wtf2pr/main.go:99,106 启动打印完整 token 与带 token 的 URL；容器/systemd 下会进入持久日志；query 传参会留在浏览器历史（前端已在读取后摘除）。本地工具属惯例（类 jupyter）", "options": "A. 保持现状并加一句安全提示（倾向）；B. 日志中打掩码、只在首次访问时展示", "status": "pending"},
-    {"id": "Q3", "title": "CORS Allow-Origin: * 且鉴权无速率限制", "background": "internal/server/server.go:198-209；token 是唯一屏障，随机 token 下不可直接利用，属纵深防御问题", "options": "A. 本地工具保持现状（倾向）；B. 默认 127.0.0.1 时省略 CORS 头、失败计数加延迟", "status": "pending"},
-    {"id": "Q4", "title": "性能技术债（pre-existing）：/api/reviews N+1、diff/文件无界读入内存、巨型目录全量 ReadDir", "background": "internal/server/server.go:605 每 review 全量读+反序列化并 spawn git cat-file；internal/git/git.go:27,74,189 cmd.Output 全量缓冲；server.go:429 ReadDir 全量。均非本分支引入", "options": "A. 登记技术债另立任务（倾向，本分支不扩大范围）；B. 本分支顺手加索引文件/大小上限", "status": "pending"}
+    {"id": "Q1", "title": "弱 token 无告警：配置文件允许 token: \"123\" 这类弱值", "background": "internal/server/server.go:212-233 authMiddleware 只比较不评估强度；随机 128-bit token 无暴破风险，但用户自配弱值会显著降低防护", "options": "人类决策：按倾向 A 执行——配置 token 长度 <16 时 stderr 告警（cmd/wtf2pr/main.go，已实施并 e2e 验证）", "status": "decided"},
+    {"id": "Q2", "title": "token 明文打印到 stdout 且经 query 传递", "background": "cmd/wtf2pr/main.go 启动打印完整 token 与带 token 的 URL；query 传参会留在浏览器历史（前端已在读取后摘除）。本地工具属惯例（类 jupyter）", "options": "人类决策：可以——保持现状并补安全提示（启动输出新增 'Keep this token private...'，已实施）", "status": "decided"},
+    {"id": "Q3", "title": "CORS Allow-Origin: * 且鉴权无速率限制", "background": "internal/server/server.go:198-209；token 是唯一屏障，随机 token 下不可直接利用，属纵深防御问题", "options": "人类决策：先不限制——保持现状（本地工具，随机 token 为主要屏障）", "status": "accepted"},
+    {"id": "Q4", "title": "性能技术债（pre-existing）：/api/reviews N+1、diff/文件无界读入内存、巨型目录全量 ReadDir", "background": "internal/server/server.go 每 review 全量读+反序列化并 spawn git cat-file；internal/git/git.go cmd.Output 全量缓冲；browse ReadDir 全量", "options": "人类决策：继续优化、不留技术债（第一个版本即修）——已实施：reviews 轻量解析+git.CommitsExist 单次 batch-check；runGitCapped 20MB 上限+DiffResponse.Truncated+前端提示；未跟踪文件 1MB 超限按二进制占位；browse 流式分批读取", "status": "decided"}
   ],
   "findings": [
     {"id": "1", "level": "critical", "location": "internal/git/git.go:56,72", "title": "git 选项注入：commit=--output=<path> 任意文件写，击穿 allowed_dirs", "evidence": "实测 git show --output=/tmp/pwned 写出攻击者可控内容；/api/diff?type=commit&commit= 未校验", "fix": "validateCommitRef 白名单（拒绝 - 开头与非法字符）+ 所有 git show/cat-file 加 --end-of-options；3 个实证测试", "status": "fixed"},
@@ -58,7 +58,7 @@
     {"group": "wtf2pr（保持现状/技术债）", "items": [
       {"id": "S9", "location": "internal/git/git.go:179", "text": "commitRefPattern 收窄非 ASCII 分支名（UTF-8）：前端只传 hex hash，有意收窄，已加注释说明取舍", "status": "accepted"},
       {"id": "S10", "location": "cmd/wtf2pr/main.go:99,106", "text": "token 启动日志打印两次（Access token 行 + URL 行）：显式 token 行便于复制，保持现状", "status": "accepted"},
-      {"id": "S11", "location": "internal/server/server.go:605; internal/git/git.go:27", "text": "reviews N+1、diff/文件无界读、巨型目录全量 ReadDir（均 pre-existing）→ 登记技术债另立任务", "status": "pending"}
+      {"id": "S11", "location": "internal/server/server.go; internal/git/git.go", "text": "reviews N+1、diff/文件无界读、巨型目录全量 ReadDir → 人类决策本版本清零：轻量解析+batch-check、runGitCapped 20MB 上限+Truncated 标记、未跟踪文件 1MB 占位、browse 流式分批（含 5 个新测试）", "status": "fixed"}
     ]}
   ],
   "decisions": [
@@ -87,7 +87,7 @@
   ],
   "notes": "本机 8322 端口有用户此前启动的旧版 dev-server 进程（旧参数 --host），评测未干扰；重启后自动使用新配置驱动。",
   "next_steps": [
-    "人类按 Q1-Q4 拍板：弱 token 告警（倾向加）、token 打印提示（倾向保持+提示）、CORS/速率限制（倾向保持）、性能技术债（倾向另立任务）",
-    "确认后合并 feat/workspace-auth-ui → main；合并前代码冻结态再跑一次 go test -race + npm build 终检"
+    "Q1-Q4 人类决策已全部执行：弱 token stderr 告警、启动安全提示、CORS 保持现状、性能技术债本版本清零（runGitCapped/CommitsExist/流式 browse）",
+    "合并 feat/workspace-auth-ui → main；合并前代码冻结态再跑一次 go test -race + npm build 终检"
   ]
 }

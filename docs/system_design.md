@@ -40,10 +40,11 @@
   - 路径规范化（`~` 展开、绝对化、符号链接解析）与目录边界匹配，为 `allowed_dirs` 访问控制提供判定。
 - **Git 模块**：
   - 执行 `git diff HEAD` 获取已跟踪文件的未提交变更。
-  - 执行 `git ls-files --others --exclude-standard` 补充未跟踪（untracked）文件。
+  - 执行 `git ls-files --others --exclude-standard` 补充未跟踪（untracked）文件（仅普通文件，超过 1MB 按二进制占位）。
   - 执行 `git show {commit}` 获取指定 Commit 的 Diff 与 Commit 元信息。
-  - 执行 `git log` + `git rev-list --count` 实现分页 Commit 列表查询。
+  - 执行 `git log` + `git rev-list --count` 实现分页 Commit 列表查询（`page_size` 上限 100）。
   - 内置 Unified Diff 解析器，将 diff 文本解析为结构化数据（文件 → Hunk → 行）。
+  - 所有 git 输出经 `runGitCapped` 限制在 20MB（超限截断并标记 `DiffResponse.Truncated`）；commit 引用白名单校验 + `--end-of-options` 防选项注入；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
 - **Review 模块**：
   - 内存存储 + JSON 文件持久化，线程安全（`sync.RWMutex`）。
   - 支持 `SwitchFile` 动态切换存储文件，切换时自动加载该文件已有评论。

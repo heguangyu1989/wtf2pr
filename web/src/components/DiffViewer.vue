@@ -12,7 +12,11 @@
     </svg>
     <div class="text-sm">暂无 diff 数据</div>
   </div>
-  <div v-else class="grid grid-cols-1 lg:grid-cols-4 gap-4 h-full">
+  <div v-else class="flex flex-col h-full gap-3">
+    <div v-if="diffData.truncated" class="shrink-0 px-3 py-2 text-xs rounded-lg bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-900/40">
+      变更内容过大，仅显示截断后的部分 diff（可能不包含全部文件）
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0">
     <aside class="lg:col-span-1 h-full overflow-hidden">
       <div class="border border-gray-200 dark:border-gray-800 rounded-xl bg-white dark:bg-gray-900 overflow-hidden h-full flex flex-col shadow-sm">
         <div class="px-3 py-2.5 border-b dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60 text-sm font-medium shrink-0 flex items-center justify-between">
@@ -82,6 +86,7 @@
         @update:comments="$emit('update:comments', $event)"
       />
     </section>
+    </div>
   </div>
 </template>
 

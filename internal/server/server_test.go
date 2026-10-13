@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1181,5 +1182,33 @@ func TestHandleGetCommitsPageSizeCap(t *testing.T) {
 	data := resp.Data.(map[string]interface{})
 	if data["pageSize"].(float64) != 100 {
 		t.Errorf("expected pageSize capped to 100, got %v", data["pageSize"])
+	}
+}
+
+func TestHandleBrowseTruncated(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	parent := t.TempDir()
+	// 创建超过 500 上限的目录数
+	for i := 0; i < 520; i++ {
+		_ = os.MkdirAll(filepath.Join(parent, "d"+strconv.Itoa(i)), 0755)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+parent, nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	dirs := data["dirs"].([]interface{})
+	if len(dirs) != 500 {
+		t.Errorf("expected exactly 500 dirs, got %d", len(dirs))
+	}
+	if data["truncated"] != true {
+		t.Errorf("expected truncated=true")
 	}
 }
