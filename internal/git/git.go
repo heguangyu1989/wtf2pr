@@ -173,6 +173,17 @@ func CommitExists(workDir, hash string) bool {
 	return strings.TrimSpace(string(out)) == "commit"
 }
 
+// IsGitRepo 检查指定目录是否位于一个 git 仓库中
+func IsGitRepo(workDir string) bool {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
 func readUntrackedFileAsDiff(workDir, filePath string) (models.FileDiff, error) {
 	fullPath := filepath.Join(workDir, filePath)
 	data, err := os.ReadFile(fullPath)

@@ -1,53 +1,168 @@
 package server
 
 import (
+	"crypto/sha1"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/wtf2pr/wtf2pr/internal/config"
 	"github.com/wtf2pr/wtf2pr/internal/export"
 	"github.com/wtf2pr/wtf2pr/internal/git"
 	"github.com/wtf2pr/wtf2pr/internal/review"
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
 
+// Options 创建 server 的参数
+type Options struct {
+	WorkDir     string
+	StaticFS    fs.FS
+	Token       string   // 访问令牌，为空则不启用鉴权
+	DataRoot    string   // 数据根目录，默认 ~/.wtf2pr
+	AllowedDirs []string // 允许访问的目录列表（已规范化），为空表示不限制
+}
+
 // Server HTTP server
 type Server struct {
-	engine     *gin.Engine
-	store      *review.Store
+	engine      *gin.Engine
+	store       *review.Store
+	staticFS    fs.FS
+	token       string
+	dataRoot    string
+	allowedDirs []string
+
+	mu         sync.RWMutex
 	workDir    string
+	storageDir string
 	reviewFile string
-	staticFS   fs.FS
 }
 
 // NewServer 创建 server
-func NewServer(workDir string, staticFS fs.FS, reviewFile string) *Server {
+func NewServer(opts Options) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 
-	s := &Server{
-		engine:     r,
-		store:      review.NewStore(reviewFile),
-		workDir:    workDir,
-		reviewFile: reviewFile,
-		staticFS:   staticFS,
+	dataRoot := opts.DataRoot
+	if dataRoot == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dataRoot = filepath.Join(home, ".wtf2pr")
+		} else {
+			// 无 HOME 时退到临时目录，避免数据静默写入进程工作目录
+			if tmp, terr := os.MkdirTemp("", "wtf2pr-data-"); terr == nil {
+				dataRoot = tmp
+			} else {
+				dataRoot = filepath.Join(os.TempDir(), "wtf2pr-data")
+			}
+			fmt.Fprintf(os.Stderr, "warning: home dir unavailable, using temp data root %s\n", dataRoot)
+		}
 	}
+
+	workDir := opts.WorkDir
+	if normalized, err := config.NormalizePath(workDir); err == nil {
+		workDir = normalized
+	}
+
+	s := &Server{
+		engine:      r,
+		staticFS:    opts.StaticFS,
+		token:       opts.Token,
+		dataRoot:    dataRoot,
+		allowedDirs: opts.AllowedDirs,
+		workDir:     workDir,
+	}
+
+	wsDir, err := s.setupWorkspace(workDir)
+	if err == nil {
+		s.storageDir = wsDir
+	} else {
+		s.storageDir = s.dataRoot
+	}
+	s.reviewFile = filepath.Join(s.storageDir, "review.json")
+
+	s.store = review.NewStore(s.reviewFile)
 	s.setupRoutes()
 	return s
 }
 
+// workspaceID 根据工作目录路径生成稳定的 workspace ID（解析符号链接，保证同一路径同一 ID）
+func workspaceID(workDir string) string {
+	normalized, err := config.NormalizePath(workDir)
+	if err != nil {
+		normalized = filepath.Clean(workDir)
+	}
+	sum := sha1.Sum([]byte(normalized))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// setupWorkspace 为工作目录准备独立的存储目录；首次创建时迁移旧版扁平存储的数据
+func (s *Server) setupWorkspace(workDir string) (string, error) {
+	if s.dataRoot == "" {
+		return "", fmt.Errorf("data root not available")
+	}
+	wsDir := filepath.Join(s.dataRoot, "workspaces", workspaceID(workDir))
+	if _, err := os.Stat(wsDir); err == nil {
+		return wsDir, nil
+	}
+	if err := os.MkdirAll(wsDir, 0700); err != nil {
+		return "", err
+	}
+	metaPath, err := config.NormalizePath(workDir)
+	if err != nil {
+		metaPath = filepath.Clean(workDir)
+	}
+	meta, _ := json.MarshalIndent(map[string]interface{}{
+		"path":      metaPath,
+		"createdAt": time.Now().Unix(),
+	}, "", "  ")
+	_ = os.WriteFile(filepath.Join(wsDir, "workspace.json"), meta, 0600)
+	s.migrateLegacyData(wsDir)
+	return wsDir, nil
+}
+
+// migrateLegacyData 将旧版直接存放在数据根目录下的 review/export.tpl 迁移到 workspace 目录
+func (s *Server) migrateLegacyData(wsDir string) {
+	matches, _ := filepath.Glob(filepath.Join(s.dataRoot, "review*.json"))
+	matches = append(matches, filepath.Join(s.dataRoot, "export.tpl"))
+	for _, src := range matches {
+		base := filepath.Base(src)
+		// 仅迁移本工具生成的 review.json / review_<id>.json，避免误动其他文件
+		if base != "review.json" && !strings.HasPrefix(base, "review_") {
+			continue
+		}
+		dst := filepath.Join(wsDir, base)
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		if err := os.Rename(src, dst); err != nil {
+			// 跨文件系统时 rename 失败，退化为复制并删除源文件，避免残留导致重复迁移
+			if data, rerr := os.ReadFile(src); rerr == nil {
+				if werr := os.WriteFile(dst, data, 0600); werr == nil {
+					_ = os.Remove(src)
+				}
+			}
+		}
+	}
+}
+
 func (s *Server) setupRoutes() {
 	api := s.engine.Group("/api")
+	api.Use(s.authMiddleware())
 	{
+		api.GET("/auth/check", s.handleAuthCheck)
 		api.GET("/diff", s.handleGetDiff)
 		api.GET("/commits", s.handleGetCommits)
 		api.GET("/config", s.handleGetConfig)
@@ -60,6 +175,9 @@ func (s *Server) setupRoutes() {
 		api.POST("/export", s.handleExport)
 		api.GET("/template", s.handleGetTemplate)
 		api.POST("/template", s.handleSaveTemplate)
+		api.GET("/workdir", s.handleGetWorkdir)
+		api.POST("/workdir", s.handleSwitchWorkdir)
+		api.GET("/fs/browse", s.handleBrowse)
 	}
 
 	// 静态文件服务
@@ -81,7 +199,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
@@ -90,16 +208,265 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) handleGetConfig(c *gin.Context) {
-	reviewFileName := filepath.Base(s.reviewFile)
-	reviewID := ""
-	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
-		reviewID = strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
+// authMiddleware 校验访问令牌；server 未配置 token 时直接放行
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.token == "" {
+			c.Next()
+			return
+		}
+		token := ""
+		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+		if token == "" {
+			token = c.GetHeader("X-Auth-Token")
+		}
+		if token == "" {
+			token = c.Query("token")
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, models.APIResponse{Code: 401, Message: "unauthorized: invalid or missing token"})
+			return
+		}
+		c.Next()
 	}
-	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
-		"reviewFile": reviewFileName,
-		"reviewID":   reviewID,
+}
+
+func (s *Server) getWorkDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workDir
+}
+
+func (s *Server) getStorageDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.storageDir == "." || s.storageDir == "" {
+		dir, _ := os.Getwd()
+		return dir
+	}
+	return s.storageDir
+}
+
+func (s *Server) getReviewFile() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.reviewFile
+}
+
+// currentReviewIDLocked 与 currentReviewID 相同，但调用方必须已持有 s.mu（读或写）
+func (s *Server) currentReviewIDLocked() string {
+	reviewFileName := filepath.Base(s.reviewFile)
+	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
+		return strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
+	}
+	return ""
+}
+
+func (s *Server) currentReviewID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentReviewIDLocked()
+}
+
+// validReviewID 校验 review ID 合法性，防止路径遍历越出存储目录
+var validReviewID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// reviewFileForID 返回指定 ID 的 review 文件路径；ID 不合法时返回空字符串
+func (s *Server) reviewFileForID(id string) string {
+	if !validReviewID.MatchString(id) {
+		return ""
+	}
+	return filepath.Join(s.getStorageDir(), "review_"+id+".json")
+}
+
+func (s *Server) handleAuthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]bool{
+		"authenticated": true,
 	}})
+}
+
+func (s *Server) handleGetConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
+		"reviewFile": filepath.Base(s.getReviewFile()),
+		"reviewID":   s.currentReviewID(),
+		"workDir":    s.getWorkDir(),
+		"storageDir": s.getStorageDir(),
+	}})
+}
+
+func (s *Server) handleGetWorkdir(c *gin.Context) {
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.WorkdirInfo{
+		WorkDir:     s.getWorkDir(),
+		StorageDir:  s.getStorageDir(),
+		Workspaces:  s.listWorkspaces(),
+		AllowedDirs: s.allowedDirsList(),
+		Restricted:  len(s.allowedDirs) > 0,
+	}})
+}
+
+// allowedDirsList 返回允许目录列表的副本（保证 JSON 序列化为 [] 而非 null）
+func (s *Server) allowedDirsList() []string {
+	dirs := make([]string, len(s.allowedDirs))
+	copy(dirs, s.allowedDirs)
+	return dirs
+}
+
+// listWorkspaces 扫描数据根目录下已知的 workspace
+func (s *Server) listWorkspaces() []models.WorkspaceItem {
+	items := []models.WorkspaceItem{}
+	if s.dataRoot == "" {
+		return items
+	}
+	root := filepath.Join(s.dataRoot, "workspaces")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return items
+	}
+	currentID := workspaceID(s.getWorkDir())
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		metaBytes, err := os.ReadFile(filepath.Join(root, entry.Name(), "workspace.json"))
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(metaBytes, &meta); err != nil || meta.Path == "" {
+			continue
+		}
+		items = append(items, models.WorkspaceItem{
+			ID:      entry.Name(),
+			Path:    meta.Path,
+			Current: entry.Name() == currentID,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return items
+}
+
+func (s *Server) handleSwitchWorkdir(c *gin.Context) {
+	var req models.SwitchWorkdirRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	abs, err := config.NormalizePath(req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid path"})
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "directory not found: " + abs})
+		return
+	}
+	if !config.IsAllowed(s.allowedDirs, abs) {
+		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "path is outside the allowed directories: " + abs})
+		return
+	}
+	if !git.IsGitRepo(abs) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "not a git repository: " + abs})
+		return
+	}
+
+	wsDir, err := s.setupWorkspace(abs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	// 字段更新与存储切换必须在同一把锁内完成，避免与并发保存产生交错
+	s.mu.Lock()
+	s.workDir = abs
+	s.storageDir = wsDir
+	s.reviewFile = filepath.Join(wsDir, "review.json")
+	s.store.SwitchFile(s.reviewFile)
+	s.mu.Unlock()
+
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.WorkdirInfo{
+		WorkDir:     s.getWorkDir(),
+		StorageDir:  s.getStorageDir(),
+		Workspaces:  s.listWorkspaces(),
+		AllowedDirs: s.allowedDirsList(),
+		Restricted:  len(s.allowedDirs) > 0,
+	}})
+}
+
+func (s *Server) handleBrowse(c *gin.Context) {
+	path := strings.TrimSpace(c.Query("path"))
+	// 受限模式下未指定路径时，返回允许访问的目录列表
+	if path == "" && len(s.allowedDirs) > 0 {
+		resp := models.BrowseResponse{Path: "", Dirs: []models.DirEntry{}}
+		for _, dir := range s.allowedDirs {
+			item := models.DirEntry{Name: filepath.Base(dir), Path: dir}
+			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+				item.IsGit = true
+			}
+			resp.Dirs = append(resp.Dirs, item)
+		}
+		c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: resp})
+		return
+	}
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+			return
+		}
+		path = home
+	}
+	abs, err := config.NormalizePath(path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid path"})
+		return
+	}
+	if !config.IsAllowed(s.allowedDirs, abs) {
+		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "path is outside the allowed directories: " + abs})
+		return
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "cannot read directory: " + err.Error()})
+		return
+	}
+
+	resp := models.BrowseResponse{
+		Path: abs,
+		Dirs: []models.DirEntry{},
+	}
+	if parent := filepath.Dir(abs); parent != abs && config.IsAllowed(s.allowedDirs, parent) {
+		resp.Parent = parent
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+		resp.IsGit = true
+	}
+	const maxEntries = 500
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		full := filepath.Join(abs, name)
+		item := models.DirEntry{Name: name, Path: full}
+		if _, err := os.Stat(filepath.Join(full, ".git")); err == nil {
+			item.IsGit = true
+		}
+		resp.Dirs = append(resp.Dirs, item)
+		if len(resp.Dirs) >= maxEntries {
+			resp.Truncated = true
+			break
+		}
+	}
+	sort.Slice(resp.Dirs, func(i, j int) bool { return resp.Dirs[i].Name < resp.Dirs[j].Name })
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: resp})
 }
 
 func (s *Server) handleGetCommits(c *gin.Context) {
@@ -114,7 +481,7 @@ func (s *Server) handleGetCommits(c *gin.Context) {
 	if req.PageSize < 1 {
 		req.PageSize = 10
 	}
-	resp, err := git.GetCommits(s.workDir, req)
+	resp, err := git.GetCommits(s.getWorkDir(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -131,7 +498,7 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 	if req.Type == "" {
 		req.Type = models.DiffTypeWorking
 	}
-	diff, err := git.GetDiff(s.workDir, req)
+	diff, err := git.GetDiff(s.getWorkDir(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -150,9 +517,10 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "id is required"})
 		return
 	}
-	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+id+".json")
-	if s.reviewFile == "" {
-		reviewFile = "review_" + id + ".json"
+	reviewFile := s.reviewFileForID(id)
+	if reviewFile == "" {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
+		return
 	}
 	data, err := os.ReadFile(reviewFile)
 	if err != nil {
@@ -171,7 +539,7 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		pr.Type = string(models.DiffTypeWorking)
 	}
 	if pr.Type == string(models.DiffTypeCommit) && pr.Commit != "" {
-		pr.CommitExists = git.CommitExists(s.workDir, pr.Commit)
+		pr.CommitExists = git.CommitExists(s.getWorkDir(), pr.Commit)
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
 }
@@ -183,12 +551,11 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 		return
 	}
 
-	reviewFileName := filepath.Base(s.reviewFile)
-	reviewID := ""
-	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
-		reviewID = strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
-	}
+	// 读锁贯穿"读取当前 reviewID 到保存完成"，与切换 workdir/review 互斥
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
+	reviewID := s.currentReviewIDLocked()
 	now := getTimestamp()
 	old := s.store.GetPersisted()
 
@@ -234,11 +601,8 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 }
 
 func (s *Server) handleGetReviews(c *gin.Context) {
-	var items []models.ReviewListItem
-	dir := filepath.Dir(s.reviewFile)
-	if dir == "." || dir == "" {
-		dir, _ = os.Getwd()
-	}
+	items := []models.ReviewListItem{}
+	dir := s.getStorageDir()
 	entries, err := os.ReadDir(dir)
 	if err == nil {
 		for _, entry := range entries {
@@ -268,7 +632,7 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 							item.CommitMsg = pr.Diff.CommitInfo.Message
 						}
 						if item.Type == string(models.DiffTypeCommit) && item.Commit != "" {
-							item.CommitExists = git.CommitExists(s.workDir, item.Commit)
+							item.CommitExists = git.CommitExists(s.getWorkDir(), item.Commit)
 						}
 					} else {
 						// old format: []Comment
@@ -294,12 +658,13 @@ func (s *Server) handleNewReview(c *gin.Context) {
 		return
 	}
 	reviewID := id.String()
-	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+reviewID+".json")
-	if s.reviewFile == "" {
-		reviewFile = "review_" + reviewID + ".json"
-	}
-	s.reviewFile = reviewFile
-	s.store.SwitchFile(reviewFile)
+
+	s.mu.Lock()
+	s.reviewFile = filepath.Join(s.storageDir, "review_"+reviewID+".json")
+	s.store.SwitchFile(s.reviewFile)
+	reviewFile := s.reviewFile
+	s.mu.Unlock()
+
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.NewReviewResponse{
 		ReviewID:   reviewID,
 		ReviewFile: filepath.Base(reviewFile),
@@ -312,16 +677,23 @@ func (s *Server) handleSwitchReview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+req.ReviewID+".json")
-	if s.reviewFile == "" {
-		reviewFile = "review_" + req.ReviewID + ".json"
+	if !validReviewID.MatchString(req.ReviewID) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
+		return
 	}
-	if _, err := os.Stat(reviewFile); os.IsNotExist(err) {
+
+	// 路径构造、存在性检查与切换在同一把锁内完成，避免与 workdir 切换交错
+	s.mu.Lock()
+	reviewFile := filepath.Join(s.storageDir, "review_"+req.ReviewID+".json")
+	if _, err := os.Stat(reviewFile); err != nil {
+		s.mu.Unlock()
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "review not found"})
 		return
 	}
 	s.reviewFile = reviewFile
 	s.store.SwitchFile(reviewFile)
+	s.mu.Unlock()
+
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.NewReviewResponse{
 		ReviewID:   req.ReviewID,
 		ReviewFile: filepath.Base(reviewFile),
@@ -339,18 +711,23 @@ func (s *Server) handleExport(c *gin.Context) {
 	var comments []models.Comment
 
 	if req.ReviewID != "" {
-		reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+req.ReviewID+".json")
-		if s.reviewFile == "" {
-			reviewFile = "review_" + req.ReviewID + ".json"
+		reviewFile := s.reviewFileForID(req.ReviewID)
+		if reviewFile == "" {
+			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
+			return
 		}
-		if data, err := os.ReadFile(reviewFile); err == nil {
-			var pr models.PersistedReview
-			if err := json.Unmarshal(data, &pr); err == nil {
-				if pr.Diff != nil {
-					diff = pr.Diff
-				}
-				comments = pr.Comments
+		data, err := os.ReadFile(reviewFile)
+		if err != nil {
+			// 显式指定的 review 不存在时拒绝导出，避免静默导出成当前 review 的内容
+			c.JSON(http.StatusNotFound, models.APIResponse{Code: 404, Message: "review not found"})
+			return
+		}
+		var pr models.PersistedReview
+		if err := json.Unmarshal(data, &pr); err == nil {
+			if pr.Diff != nil {
+				diff = pr.Diff
 			}
+			comments = pr.Comments
 		}
 	}
 
@@ -360,7 +737,7 @@ func (s *Server) handleExport(c *gin.Context) {
 			diff = persisted.Diff
 		} else {
 			diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
-			got, err := git.GetDiff(s.workDir, diffReq)
+			got, err := git.GetDiff(s.getWorkDir(), diffReq)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 				return
@@ -398,11 +775,7 @@ func (s *Server) handleExport(c *gin.Context) {
 }
 
 func (s *Server) templatePath() string {
-	dir := filepath.Dir(s.reviewFile)
-	if dir == "." || dir == "" {
-		dir, _ = os.Getwd()
-	}
-	return filepath.Join(dir, "export.tpl")
+	return filepath.Join(s.getStorageDir(), "export.tpl")
 }
 
 func (s *Server) handleGetTemplate(c *gin.Context) {
@@ -420,7 +793,7 @@ func (s *Server) handleSaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	if err := os.WriteFile(s.templatePath(), []byte(req.Content), 0644); err != nil {
+	if err := os.WriteFile(s.templatePath(), []byte(req.Content), 0600); err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
 	}

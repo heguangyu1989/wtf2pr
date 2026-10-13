@@ -9,7 +9,7 @@ BUILD_DIR := build
 ##   可覆盖环境变量：DEV_HOST, DEV_PORT
 ##
 dev-web:
-	@echo "Starting frontend dev server on $$(DEV_HOST:=0.0.0.0):$$(DEV_PORT:=8323)..."
+	@echo "Starting frontend dev server on $${DEV_HOST:-0.0.0.0}:$${DEV_PORT:-8323}..."
 	@cd $(WEB_DIR) && DEV_HOST=$(DEV_HOST) DEV_PORT=$(DEV_PORT) npm run dev
 
 ## ensure-dist: 保证 embed 目录非空，避免 go:embed 编译失败
@@ -21,10 +21,11 @@ ensure-dist:
 	fi
 
 ## dev-server: 开发模式下运行后端（不重新构建前端）
+##   工作目录等配置读取 ~/.wtf2pr/config.yaml，可用 WTF2PR_CONFIG 覆盖配置文件路径
 ##
 dev-server: ensure-dist
 	@echo "Starting backend server..."
-	@go run ./cmd/wtf2pr web --workdir=. --port=8322 --host=0.0.0.0 --workdir /mnt/data/code/dev-workbench
+	@go run ./cmd/wtf2pr web --port=8322 $(if $(WTF2PR_CONFIG),--config=$(WTF2PR_CONFIG))
 
 ## embed: 构建前端并将产物嵌入 Go 二进制
 ##
