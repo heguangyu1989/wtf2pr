@@ -1,14 +1,14 @@
 <template>
-  <div class="border rounded-lg overflow-hidden bg-white dark:bg-gray-900">
-    <div class="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b text-sm font-medium flex items-center justify-between">
+  <div class="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden bg-white dark:bg-gray-900 shadow-sm">
+    <div class="px-4 py-2.5 bg-gray-50 dark:bg-gray-800/60 border-b dark:border-gray-800 text-sm font-medium flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <span v-if="file.isNew" class="text-green-600">+</span>
-        <span v-else-if="file.isDeleted" class="text-red-600">−</span>
-        <span v-else class="text-gray-500">M</span>
-        <span class="font-mono">{{ displayPath }}</span>
+        <span v-if="file.isNew" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-bold">+</span>
+        <span v-else-if="file.isDeleted" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-bold">−</span>
+        <span v-else class="w-5 h-5 rounded text-xs flex items-center justify-center bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-bold">M</span>
+        <span class="font-mono text-xs">{{ displayPath }}</span>
       </div>
       <button
-        class="text-xs px-2 py-1 rounded bg-white dark:bg-gray-700 border hover:bg-gray-50"
+        class="text-xs px-2.5 py-1 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition"
         @click="addFileComment"
       >
         添加文件评论
@@ -16,28 +16,28 @@
     </div>
 
     <!-- Existing comments for this file -->
-    <div v-if="fileComments.length" class="border-b px-4 py-3 space-y-2 bg-yellow-50/50 dark:bg-yellow-900/10">
-      <div v-for="c in fileComments" :key="c.id" class="text-sm">
-        <div class="text-gray-500 text-xs mb-1">
-          {{ c.lineKey ? `Line ${c.lineKey}` : 'File comment' }}
-          <button class="ml-2 text-red-500 hover:underline" @click="removeComment(c.id)">删除</button>
+    <div v-if="fileComments.length" class="border-b dark:border-gray-800 px-4 py-3 space-y-2 bg-amber-50/60 dark:bg-amber-900/10">
+      <div v-for="c in fileComments" :key="c.id" class="text-sm bg-white/60 dark:bg-gray-900/40 rounded-lg px-3 py-2 border border-amber-200/50 dark:border-amber-900/30">
+        <div class="text-gray-500 text-xs mb-1 flex items-center justify-between">
+          <span class="font-mono">{{ c.lineKey ? `Line ${c.lineKey}` : 'File comment' }}</span>
+          <button class="text-red-500 hover:text-red-600 hover:underline" @click="removeComment(c.id)">删除</button>
         </div>
         <div class="whitespace-pre-wrap">{{ c.content }}</div>
       </div>
     </div>
 
     <!-- File-level editing box -->
-    <div v-if="editing && editingLineKey === ''" class="border-b px-4 py-3 bg-white dark:bg-gray-900">
+    <div v-if="editing && editingLineKey === ''" class="border-b dark:border-gray-800 px-4 py-3 bg-blue-50/40 dark:bg-blue-900/10">
       <div class="text-xs text-gray-500 mb-2">Review file</div>
       <textarea
         v-model="editingContent"
         rows="3"
-        class="w-full border rounded px-2 py-1 text-sm font-mono"
+        class="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-2.5 py-1.5 text-sm font-mono bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
         placeholder="输入 review 内容..."
       />
       <div class="mt-2 flex gap-2">
-        <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="submitComment">保存</button>
-        <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50" @click="cancelEdit">取消</button>
+        <button class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition shadow-sm" @click="submitComment">保存</button>
+        <button class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 text-sm rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition" @click="cancelEdit">取消</button>
       </div>
     </div>
 
@@ -47,20 +47,20 @@
       <table class="w-full text-sm border-collapse">
         <tbody>
           <template v-for="(hunk, hi) in file.hunks" :key="hi">
-            <tr class="bg-gray-50 dark:bg-gray-800">
-              <td colspan="3" class="px-2 py-1 text-gray-500 font-mono text-xs select-none">
+            <tr class="bg-gray-50 dark:bg-gray-800/70">
+              <td colspan="3" class="px-2 py-1.5 text-gray-500 font-mono text-xs select-none">
                 @@ -{{ hunk.oldStart }},{{ hunk.oldLines }} +{{ hunk.newStart }},{{ hunk.newLines }} @@
               </td>
             </tr>
             <template v-for="(line, li) in hunk.lines" :key="`${hi}-${li}`">
               <tr
-                class="hover:bg-gray-50 dark:hover:bg-gray-800"
+                class="hover:bg-gray-50 dark:hover:bg-gray-800/60"
                 :class="lineClass(line.type)"
               >
-                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r">
+                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r dark:border-gray-800">
                   {{ line.oldLineNo > 0 ? line.oldLineNo : '' }}
                 </td>
-                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r">
+                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r dark:border-gray-800">
                   {{ line.newLineNo > 0 ? line.newLineNo : '' }}
                 </td>
                 <td class="pl-2 font-mono whitespace-pre cursor-pointer" @click="onLineClick(line)">
@@ -69,18 +69,18 @@
                 </td>
               </tr>
               <!-- Inline editing row for this line -->
-              <tr v-if="editing && editingLineKey === lineKey(line)" class="bg-white dark:bg-gray-900">
-                <td colspan="3" class="px-4 py-3 border-b">
+              <tr v-if="editing && editingLineKey === lineKey(line)" class="bg-blue-50/40 dark:bg-blue-900/10">
+                <td colspan="3" class="px-4 py-3 border-b dark:border-gray-800">
                   <div class="text-xs text-gray-500 mb-2">Review line {{ editingLineKey }}</div>
                   <textarea
                     v-model="editingContent"
                     rows="3"
-                    class="w-full border rounded px-2 py-1 text-sm font-mono"
+                    class="w-full border border-gray-300 dark:border-gray-700 rounded-lg px-2.5 py-1.5 text-sm font-mono bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
                     placeholder="输入 review 内容..."
                   />
                   <div class="mt-2 flex gap-2">
-                    <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="submitComment">保存</button>
-                    <button class="px-3 py-1 border text-sm rounded hover:bg-gray-50" @click="cancelEdit">取消</button>
+                    <button class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition shadow-sm" @click="submitComment">保存</button>
+                    <button class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 text-sm rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition" @click="cancelEdit">取消</button>
                   </div>
                 </td>
               </tr>

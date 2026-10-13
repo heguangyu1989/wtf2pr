@@ -165,6 +165,40 @@ type ExportResponse struct {
 	Content string       `json:"content"`
 }
 
+// WorkspaceItem 工作区条目（数据按工作目录区分存储）
+type WorkspaceItem struct {
+	ID      string `json:"id"`
+	Path    string `json:"path"`
+	Current bool   `json:"current"`
+}
+
+// WorkdirInfo 当前工作目录与已知工作区信息
+type WorkdirInfo struct {
+	WorkDir    string          `json:"workDir"`
+	StorageDir string          `json:"storageDir"`
+	Workspaces []WorkspaceItem `json:"workspaces"`
+}
+
+// SwitchWorkdirRequest 切换工作目录请求
+type SwitchWorkdirRequest struct {
+	Path string `json:"path" binding:"required"`
+}
+
+// DirEntry 目录浏览条目
+type DirEntry struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsGit bool   `json:"isGit"`
+}
+
+// BrowseResponse 目录浏览响应
+type BrowseResponse struct {
+	Path   string     `json:"path"`
+	Parent string     `json:"parent"`
+	IsGit  bool       `json:"isGit"`
+	Dirs   []DirEntry `json:"dirs"`
+}
+
 // APIResponse 通用 API 响应包装
 type APIResponse struct {
 	Code    int         `json:"code"`

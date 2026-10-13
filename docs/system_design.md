@@ -15,8 +15,9 @@
 
 1. 后端通过 `github.com/spf13/cobra` 提供命令行入口。
 2. 后端通过 Go 官方 `embed` 将前端页面打包到一个可执行二进制文件。
-3. 通过 `wtf2pr web --port={port} --host={host} --workdir={工作目录}` 指令启动服务。
-4. Review 数据默认持久化到 `~/.wtf2pr/review_{uuid}.json`，支持历史 Review 的列表查看与切换。
+3. 通过 `wtf2pr web --port={port} --host={host} --workdir={工作目录} [--token={访问令牌}]` 指令启动服务。
+4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录，旧版扁平存储数据首次启动时自动迁移。
+5. 服务启动时生成随机访问令牌（可用 `--token` 指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer` 或 `?token=`）。
 
 ## 系统架构
 

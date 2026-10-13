@@ -58,7 +58,11 @@ func setupTestServer(t *testing.T) (*Server, string) {
 		t.Fatalf("failed to write index.html: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	srv := NewServer(dir, os.DirFS(staticDir), "")
+	srv := NewServer(Options{
+		WorkDir:  dir,
+		StaticFS: os.DirFS(staticDir),
+		DataRoot: t.TempDir(),
+	})
 	return srv, dir
 }
 
@@ -477,7 +481,9 @@ func TestHandleSaveTemplate(t *testing.T) {
 	srv, dir := setupTestServer(t)
 	tplPath := filepath.Join(dir, ".wtf2pr", "export.tpl")
 	_ = os.MkdirAll(filepath.Dir(tplPath), 0755)
-	srv.reviewFile = tplPath
+	srv.mu.Lock()
+	srv.storageDir = filepath.Dir(tplPath)
+	srv.mu.Unlock()
 	body, _ := json.Marshal(map[string]string{"content": "{{.Type}}"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/template", bytes.NewReader(body))
@@ -492,5 +498,244 @@ func TestHandleSaveTemplate(t *testing.T) {
 	}
 	if string(b) != "{{.Type}}" {
 		t.Errorf("expected saved template content")
+	}
+}
+
+func TestAuthMiddleware(t *testing.T) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
+	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(Options{
+		WorkDir:  dir,
+		StaticFS: os.DirFS(staticDir),
+		Token:    "secret-token",
+		DataRoot: t.TempDir(),
+	})
+
+	// 无 token 应返回 401
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/config", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", w.Code)
+	}
+
+	// 错误 token 应返回 401
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/config", nil)
+	req2.Header.Set("Authorization", "Bearer wrong-token")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", w2.Code)
+	}
+
+	// Authorization 头携带正确 token 应放行
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/auth/check", nil)
+	req3.Header.Set("Authorization", "Bearer secret-token")
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid token, got %d", w3.Code)
+	}
+
+	// query 参数携带正确 token 应放行
+	w4 := httptest.NewRecorder()
+	req4, _ := http.NewRequest("GET", "/api/auth/check?token=secret-token", nil)
+	srv.engine.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("expected 200 with token query param, got %d", w4.Code)
+	}
+}
+
+func TestHandleSwitchWorkdir(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	other := initTestRepo(t)
+
+	// 切换到另一个 git 仓库
+	body, _ := json.Marshal(models.SwitchWorkdirRequest{Path: other})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["workDir"] != other {
+		t.Errorf("expected workDir %s, got %v", other, data["workDir"])
+	}
+	storageDir, _ := data["storageDir"].(string)
+	if storageDir == "" || storageDir == dir {
+		t.Errorf("expected per-workdir storage dir, got %v", storageDir)
+	}
+
+	// 新目录下的 review 数据应与旧目录隔离
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/review", nil)
+	srv.engine.ServeHTTP(w2, req2)
+	var resp2 models.APIResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	pr := resp2.Data.(map[string]interface{})
+	if comments, ok := pr["comments"].([]interface{}); !ok || len(comments) != 0 {
+		t.Errorf("expected empty comments in new workspace")
+	}
+
+	// 切换到非 git 目录应失败
+	nonGit := t.TempDir()
+	body2, _ := json.Marshal(models.SwitchWorkdirRequest{Path: nonGit})
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body2))
+	req3.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-git dir, got %d", w3.Code)
+	}
+
+	// 切换到不存在的目录应失败
+	body3, _ := json.Marshal(models.SwitchWorkdirRequest{Path: filepath.Join(nonGit, "not-exist")})
+	w4 := httptest.NewRecorder()
+	req4, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body3))
+	req4.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing dir, got %d", w4.Code)
+	}
+}
+
+func TestHandleGetWorkdir(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/workdir", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["workDir"] != dir {
+		t.Errorf("expected workDir %s, got %v", dir, data["workDir"])
+	}
+	workspaces, ok := data["workspaces"].([]interface{})
+	if !ok || len(workspaces) == 0 {
+		t.Fatalf("expected at least one workspace")
+	}
+	first := workspaces[0].(map[string]interface{})
+	if first["current"] != true {
+		t.Errorf("expected current workspace to be marked")
+	}
+}
+
+func TestWorkspaceDataIsolation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	other := initTestRepo(t)
+
+	// 在第一个工作目录保存评论
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "repo1"}}, Type: models.DiffTypeWorking})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+
+	// 切换到第二个工作目录
+	swBody, _ := json.Marshal(models.SwitchWorkdirRequest{Path: other})
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(swBody))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("switch failed: %s", w2.Body.String())
+	}
+
+	// 第二个工作目录不应看到第一个目录的评论
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/review", nil)
+	srv.engine.ServeHTTP(w3, req3)
+	var resp3 models.APIResponse
+	_ = json.Unmarshal(w3.Body.Bytes(), &resp3)
+	comments := resp3.Data.(map[string]interface{})["comments"].([]interface{})
+	if len(comments) != 0 {
+		t.Errorf("expected isolated storage, got %d comments", len(comments))
+	}
+}
+
+func TestHandleBrowse(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	parent := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(parent, "aaa"), 0755)
+	_ = os.MkdirAll(filepath.Join(parent, "bbb"), 0755)
+	_ = os.MkdirAll(filepath.Join(parent, ".hidden"), 0755)
+	_ = os.WriteFile(filepath.Join(parent, "file.txt"), []byte("x"), 0644)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+parent, nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	dirs := data["dirs"].([]interface{})
+	if len(dirs) != 2 {
+		t.Errorf("expected 2 visible dirs (hidden/files filtered), got %d", len(dirs))
+	}
+	if data["parent"] == "" {
+		t.Errorf("expected parent to be set")
+	}
+
+	// 无效路径
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/fs/browse?path="+filepath.Join(parent, "not-exist"), nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing dir, got %d", w2.Code)
+	}
+}
+
+func TestLegacyDataMigration(t *testing.T) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
+	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
+	dataRoot := t.TempDir()
+	// 旧版扁平存储：数据直接放在 dataRoot 下
+	legacy := `{"reviewID":"","type":"working","comments":[{"id":"1","filePath":"a.go","content":"legacy"}]}`
+	if err := os.WriteFile(filepath.Join(dataRoot, "review.json"), []byte(legacy), 0644); err != nil {
+		t.Fatalf("failed to write legacy review: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(Options{
+		WorkDir:  dir,
+		StaticFS: os.DirFS(staticDir),
+		DataRoot: dataRoot,
+	})
+
+	// 旧数据应被迁移到 workspace 目录并自动加载
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/review", nil)
+	srv.engine.ServeHTTP(w, req)
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	comments := resp.Data.(map[string]interface{})["comments"].([]interface{})
+	if len(comments) != 1 {
+		t.Fatalf("expected migrated legacy review to be loaded, got %d comments", len(comments))
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "review.json")); !os.IsNotExist(err) {
+		t.Errorf("expected legacy file to be moved into workspace dir")
 	}
 }

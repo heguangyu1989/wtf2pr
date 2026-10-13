@@ -1,17 +1,69 @@
 const BASE = '/api'
+const TOKEN_KEY = 'wtf2pr_token'
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || ''
+}
+
+export function setToken(token) {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token)
+  } else {
+    localStorage.removeItem(TOKEN_KEY)
+  }
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+// 启动时支持从 URL ?token=xxx 读取并持久化（服务端启动日志会输出带 token 的链接）
+(function initTokenFromURL() {
+  try {
+    const url = new URL(window.location.href)
+    const token = url.searchParams.get('token')
+    if (token) {
+      setToken(token)
+      url.searchParams.delete('token')
+      window.history.replaceState({}, '', url.toString())
+    }
+  } catch {
+    // ignore
+  }
+})()
 
 async function request(url, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  }
+  const token = getToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(BASE + url, {
-    headers: {
-      'Content-Type': 'application/json',
-    },
     ...options,
+    headers,
   })
-  const data = await res.json()
+  let data
+  try {
+    data = await res.json()
+  } catch {
+    throw new Error(`请求失败 (HTTP ${res.status})`)
+  }
+  if (res.status === 401 || data.code === 401) {
+    const err = new Error(data.message || '未授权，请输入访问令牌')
+    err.status = 401
+    throw err
+  }
   if (data.code !== 0) {
     throw new Error(data.message || 'API error')
   }
   return data.data
+}
+
+export function checkAuth() {
+  return request('/auth/check')
 }
 
 export function getDiff(type = 'working', commit = '') {
@@ -78,4 +130,21 @@ export function saveTemplate(content) {
     method: 'POST',
     body: JSON.stringify({ content }),
   })
+}
+
+export function getWorkdir() {
+  return request('/workdir')
+}
+
+export function switchWorkdir(path) {
+  return request('/workdir', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
+
+export function browseDirs(path = '') {
+  const qs = new URLSearchParams()
+  if (path) qs.set('path', path)
+  return request(`/fs/browse?${qs.toString()}`)
 }

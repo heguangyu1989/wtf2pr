@@ -1,18 +1,18 @@
 <template>
-  <div class="border rounded-lg overflow-hidden bg-white dark:bg-gray-900">
-    <div class="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b text-sm font-medium flex items-center justify-between">
+  <div class="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden bg-white dark:bg-gray-900 shadow-sm">
+    <div class="px-4 py-2.5 bg-gray-50 dark:bg-gray-800/60 border-b dark:border-gray-800 text-sm font-medium flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <span v-if="file.isNew" class="text-green-600">+</span>
-        <span v-else-if="file.isDeleted" class="text-red-600">−</span>
-        <span v-else class="text-gray-500">M</span>
-        <span class="font-mono">{{ displayPath }}</span>
+        <span v-if="file.isNew" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-bold">+</span>
+        <span v-else-if="file.isDeleted" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-bold">−</span>
+        <span v-else class="w-5 h-5 rounded text-xs flex items-center justify-center bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-bold">M</span>
+        <span class="font-mono text-xs">{{ displayPath }}</span>
       </div>
     </div>
 
     <!-- Existing comments for this file -->
-    <div v-if="fileComments.length" class="border-b px-4 py-3 space-y-2 bg-yellow-50/50 dark:bg-yellow-900/10">
-      <div v-for="c in fileComments" :key="c.id" class="text-sm">
-        <div class="text-gray-500 text-xs mb-1">
+    <div v-if="fileComments.length" class="border-b dark:border-gray-800 px-4 py-3 space-y-2 bg-amber-50/60 dark:bg-amber-900/10">
+      <div v-for="c in fileComments" :key="c.id" class="text-sm bg-white/60 dark:bg-gray-900/40 rounded-lg px-3 py-2 border border-amber-200/50 dark:border-amber-900/30">
+        <div class="text-gray-500 text-xs mb-1 font-mono">
           {{ c.lineKey ? `Line ${c.lineKey}` : 'File comment' }}
         </div>
         <div class="whitespace-pre-wrap">{{ c.content }}</div>
@@ -25,20 +25,20 @@
       <table class="w-full text-sm border-collapse">
         <tbody>
           <template v-for="(hunk, hi) in file.hunks" :key="hi">
-            <tr class="bg-gray-50 dark:bg-gray-800">
-              <td colspan="3" class="px-2 py-1 text-gray-500 font-mono text-xs select-none">
+            <tr class="bg-gray-50 dark:bg-gray-800/70">
+              <td colspan="3" class="px-2 py-1.5 text-gray-500 font-mono text-xs select-none">
                 @@ -{{ hunk.oldStart }},{{ hunk.oldLines }} +{{ hunk.newStart }},{{ hunk.newLines }} @@
               </td>
             </tr>
             <template v-for="(line, li) in hunk.lines" :key="`${hi}-${li}`">
               <tr
-                class="hover:bg-gray-50 dark:hover:bg-gray-800"
+                class="hover:bg-gray-50 dark:hover:bg-gray-800/60"
                 :class="lineClass(line.type)"
               >
-                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r">
+                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r dark:border-gray-800">
                   {{ line.oldLineNo > 0 ? line.oldLineNo : '' }}
                 </td>
-                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r">
+                <td class="w-12 text-right pr-2 text-gray-400 select-none font-mono text-xs border-r dark:border-gray-800">
                   {{ line.newLineNo > 0 ? line.newLineNo : '' }}
                 </td>
                 <td class="pl-2 font-mono whitespace-pre">

@@ -1,15 +1,15 @@
 <template>
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] px-4">
-    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
-      <div class="px-4 py-3 border-b flex items-center justify-between">
-        <div class="font-medium">导出结果 ({{ format }})</div>
-        <button class="text-gray-500 hover:text-gray-700" @click="$emit('close')">关闭</button>
+  <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[70] px-4" @click.self="$emit('close')">
+    <div class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col border border-gray-200/60 dark:border-gray-700/60">
+      <div class="px-4 py-3 border-b dark:border-gray-700 flex items-center justify-between">
+        <div class="font-semibold text-sm">导出结果 <span class="text-xs text-gray-400 font-normal">({{ format }})</span></div>
+        <button class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none px-1" @click="$emit('close')">×</button>
       </div>
       <div class="p-4 overflow-auto flex-1">
-        <pre class="text-xs font-mono whitespace-pre-wrap bg-gray-100 dark:bg-gray-800 p-3 rounded">{{ content }}</pre>
+        <pre class="text-xs font-mono whitespace-pre-wrap bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 p-3 rounded-lg">{{ content }}</pre>
       </div>
-      <div class="px-4 py-3 border-t flex justify-end gap-2">
-        <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="copy">
+      <div class="px-4 py-3 border-t dark:border-gray-700 flex justify-end gap-2">
+        <button class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition shadow-sm" @click="copy">
           {{ copied ? '已复制' : '复制到剪贴板' }}
         </button>
       </div>

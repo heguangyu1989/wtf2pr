@@ -1,6 +1,6 @@
 <template>
-  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
-    <div class="w-full max-w-5xl max-h-[85vh] overflow-hidden rounded-lg bg-white dark:bg-gray-900 shadow-xl flex flex-col">
+  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" @click.self="$emit('close')">
+    <div class="w-full max-w-5xl max-h-[85vh] overflow-hidden rounded-xl bg-white dark:bg-gray-900 shadow-2xl flex flex-col border border-gray-200/60 dark:border-gray-700/60">
       <div class="flex items-center justify-between border-b px-4 py-3 shrink-0">
         <div>
           <h2 class="text-base font-semibold">Review 详情</h2>
