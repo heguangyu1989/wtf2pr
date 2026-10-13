@@ -45,21 +45,33 @@ func (s *Store) loadData(data []byte) {
 }
 
 // Save 保存 review 记录；若评论为空则删除文件
-func (s *Store) Save(persisted *models.PersistedReview) {
+func (s *Store) Save(persisted *models.PersistedReview) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.persisted = persisted
 	if s.filePath == "" {
-		return
+		return nil
 	}
 	if len(persisted.Comments) == 0 {
 		_ = os.Remove(s.filePath)
-		return
+		return nil
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(s.filePath, data, 0600)
+	if err != nil {
+		return err
 	}
+	return WriteFileAtomic(s.filePath, data, 0600)
+}
+
+// WriteFileAtomic 写临时文件后原子替换，避免进程崩溃或并发读到半写内容
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	// WriteFile 对已存在文件不更新权限位（兼容旧版 0644 数据），统一收紧
+	_ = os.Chmod(tmp, perm)
+	return os.Rename(tmp, path)
 }
 
 // Get 获取评论列表

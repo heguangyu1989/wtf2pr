@@ -1,12 +1,12 @@
 <template>
-  <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[80] px-4" @click.self="$emit('close')">
+  <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[80] px-4" @click.self="onOverlayClose">
     <div class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col border border-gray-200/60 dark:border-gray-700/60">
       <div class="px-5 py-3.5 border-b dark:border-gray-700 flex items-center justify-between shrink-0">
         <div>
           <div class="font-semibold text-sm">切换工作目录</div>
           <div class="text-xs text-gray-500 mt-0.5">不同工作目录的 Review 数据相互独立存储</div>
         </div>
-        <button class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none px-1" @click="$emit('close')">×</button>
+        <button class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none px-1 disabled:opacity-40" :disabled="switching" @click="onOverlayClose">×</button>
       </div>
 
       <div class="flex-1 overflow-hidden flex flex-col min-h-0">
@@ -95,7 +95,7 @@
         <div class="flex items-center justify-between gap-2">
           <div class="text-xs text-gray-400 truncate">切换后页面数据将按新目录重新加载</div>
           <div class="flex gap-2 shrink-0">
-            <button class="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition" @click="$emit('close')">取消</button>
+            <button class="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition disabled:opacity-40" :disabled="switching" @click="onOverlayClose">取消</button>
             <button
               class="px-4 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition shadow-sm"
               :disabled="switching || !isGit || currentPath === currentWorkdir"
@@ -137,6 +137,12 @@ function shortPath(p) {
   const parts = p.split('/')
   if (parts.length <= 2) return p
   return '…/' + parts.slice(-2).join('/')
+}
+
+// 切换进行中禁止关闭，避免响应到达后用户已离开弹窗却触发整页重置
+function onOverlayClose() {
+  if (switching.value) return
+  emit('close')
 }
 
 // 浏览并发序号：仅最新一次浏览的结果生效，避免快速点击时后到响应覆盖

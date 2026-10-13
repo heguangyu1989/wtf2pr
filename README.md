@@ -2,7 +2,7 @@
 
 > “别让一声 WTF 成为结局，让它成为修复的开始。”
 
-**WTF2PR** 是一个本地代码 Review 工具。它能把 Git 仓库中未提交的变更（包括已修改、已暂存、未跟踪的文件）或某个具体 Commit 的 Diff，在 Web 页面上直观展示出来。你可以逐行添加 Review 意见，最后将 Review 结果以结构化格式（Markdown / JSON / XML）一次性导出，交给 AI Coding 工具进行修复。
+**WTF2PR** 是一个本地代码 Review 工具。它能把 Git 仓库中未提交的变更（包括已修改、已暂存、未跟踪的文件）或某个具体 Commit 的 Diff，在 Web 页面上直观展示出来。你可以逐行添加 Review 意见，最后将 Review 结果以结构化格式（Markdown / JSON / XML / 自定义 Template）一次性导出，交给 AI Coding 工具进行修复。
 
 ---
 
@@ -19,7 +19,7 @@
 - **路径访问限制**：支持 YAML 配置文件（`allowed_dirs`）限制 Web 端可访问的目录范围，防止越权切换或浏览服务器文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见。
 - **结构化导出**：支持导出为 **Markdown**、**JSON**、**XML** 与自定义 **Template**，仅包含被评论的文件与关键代码行，避免冗余 Token 消耗。
-- **Review 持久化**：Review 数据自动保存到本地 JSON 文件，关闭服务后仍可恢复。
+- **Review 持久化**：评论点击“保存 Review”后持久化到本地 JSON 文件，关闭服务后仍可恢复。
 - **单二进制部署**：前端通过 Go `embed` 直接打包进后端可执行文件，无需额外部署。
 
 ---
@@ -155,17 +155,24 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 
 ## API 简介
 
-> 除静态页面外，所有 API 均需鉴权：`Authorization: Bearer <token>`、`X-Auth-Token: <token>` 头或 `?token=<token>` 查询参数。
+> 除静态页面外，所有 API 均需鉴权：`Authorization: Bearer <token>`、`X-Auth-Token: <token>` 头或 `?token=<token>` 查询参数；请求体上限 10MB。
 
 - `GET /api/auth/check` — 校验访问令牌是否有效
-- `GET /api/diff?type=working` — 获取工作区未提交的 Diff
+- `GET /api/config` — 获取当前 review 文件与 workDir
+- `GET /api/diff?type=working` — 获取工作区未提交的 Diff（超大 diff 截断并标记 `truncated`）
 - `GET /api/diff?type=commit&commit=<hash>` — 获取指定 Commit 的 Diff
-- `GET /api/workdir` — 获取当前工作目录与已知工作区列表
-- `POST /api/workdir` — 切换工作目录（`{"path": "/path/to/repo"}`，数据区随之切换；目标必须是 git 仓库，否则返回 400）
-- `GET /api/fs/browse?path=<dir>` — 浏览服务器目录（用于工作目录选择）
+- `GET /api/commits?page=1&page_size=10` — 分页 Commit 列表（`page_size` 上限 100）
 - `GET /api/review` — 获取当前 Review 数据
 - `POST /api/review` — 保存 Review 数据
-- `POST /api/export` — 导出 Review 报告
+- `GET /api/review/detail?id=<id>` — 获取指定 Review 详情（`default` 表示默认 review.json）
+- `GET /api/reviews` — 历史 Review 列表（含 `default`，零评论文件被过滤）
+- `POST /api/review/new` — 新建 Review
+- `POST /api/review/switch` — 切换当前 Review
+- `POST /api/export` — 导出 Review 报告（Markdown / JSON / XML / Template）
+- `GET|POST /api/template` — 读取 / 保存自定义导出模板（禁止 `{{define}}/{{template}}` 递归动作）
+- `GET /api/workdir` — 获取当前工作目录与已知工作区列表
+- `POST /api/workdir` — 切换工作目录（`{"path": "/path/to/repo"}`，数据区随之切换；目标必须是 git 仓库，否则返回 400）
+- `GET /api/fs/browse?path=<dir>` — 浏览服务器目录（用于工作目录选择，超 500 条截断）
 
 ---
 

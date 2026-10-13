@@ -58,12 +58,17 @@ go test ./internal/server/ -v
 | `TestReadUntrackedFileAsDiff_NotFound` | 验证读取不存在的未跟踪文件返回错误 |
 | `TestReadUntrackedFileAsDiff_SymlinkSkipped` | 验证指向仓库外的符号链接被拒绝读取（防越界任意文件读） |
 | `TestReadUntrackedFileAsDiff_Oversize` | 验证超过大小上限的未跟踪文件按二进制占位处理（不全量读入内存） |
-| `TestGetUntrackedFiles` | 调用 `git ls-files` 接口，确保无 panic |
+| `TestGetUntrackedFiles` | 验证未跟踪文件出现在列表、已跟踪文件不出现 |
+| `TestGetUntrackedFilesReal` | 验证含空格与非 ASCII 文件名的未跟踪文件正确列出（`-z` NUL 分割） |
+| `TestUntrackedFileCountCap` | 验证未跟踪文件数量超限截断并标记 `Truncated` |
+| `TestTextconvNotExecuted` | 验证恶意仓库配置的 textconv 钩子不会被执行（working 与 commit diff 双向） |
+| `TestParseDiffSpacedFilename` | 验证含空格文件名以 `--- `/`+++ ` 行为准正确解析 |
+| `TestParseDiffHunkContentWithDashDashPrefix` | 验证 hunk 内 `-- `/`++ ` 前缀的内容行不被误判为文件头且行数据完整 |
 | `TestValidateCommitRef` | 验证 commit 引用白名单：合法 rev（HEAD~3、分支、hash）放行，选项注入（`--output=` 等）拒绝 |
 | `TestGetCommitDiff_RejectsOptionInjection` | 验证选项注入不产生任意文件写 |
-| `TestCommitExists_RejectsInvalidRef` | 验证非法引用返回 false |
+| `TestCommitsExistRejectsInvalidRef` | 验证非法引用返回 false |
 | `TestCommitsExistBatch` | 验证批量 commit 存在性检查（单次 `git cat-file --batch-check`），含不存在与非法引用 |
-| `TestRunGitCappedTruncation` | 验证 git 输出超限截断到最后完整行且仍可解析，恢复上限后完整输出 |
+| `TestRunGitCappedTruncation` | 验证 git 输出超限截断到最后完整行且仍可解析（>64KB 管道缓冲，含不排空管道的死锁回归），恢复上限后完整输出 |
 | `TestGetWorkingDiffTruncatedFlag` | 验证巨型 working diff 时 `DiffResponse.Truncated=true` |
 
 ---
@@ -101,6 +106,7 @@ go test ./internal/server/ -v
 | `TestFindCodeContext_InvalidLineKey` | 验证非法 `lineKey` 格式返回空字符串 |
 | `TestLineKeyToDisplay` | 验证 `lineKey` 空值显示为 `file`，非空保持原样 |
 | `TestRenderTemplate` | 验证 Go `text/template` 自定义模板导出 |
+| `TestValidateTemplateRejectsRecursion` | 验证递归模板（`{{define}}/{{template}}` 及其空白变体）被拒绝 |
 
 ---
 
@@ -120,12 +126,15 @@ go test ./internal/server/ -v
 | `TestHandleGetCommitsPageSizeCap` | 验证 `page_size` 超过上限时被收敛到 100 |
 | `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回有评论的历史 review 列表 |
 | `TestHandleGetReviewsFiltersEmpty` | 向存储目录预置零评论与有评论文件，真实验证零评论被过滤 |
+| `TestHandleGetReviewsCommitExists` | 验证 commit 类型 review 列表的 `commitExists` 真值/假值路径与 detail 校验 |
+| `TestDefaultReviewListedAndSwitchable` | 验证默认 review.json 以 `default` 标识入列、可切换切回、detail 可读 |
 | `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID 并切换当前 review（文件在首次非空保存时才落盘） |
 | `TestHandleSwitchReview` | 验证 `POST /api/review/switch` 能切换到历史 review 并加载其评论数据；不存在时返回 400 |
 | `TestHandleGetReviewDetail` | 验证 review 详情读取与不存在的 ID 返回 404 |
 | `TestHandleExport` | 验证 `POST /api/export` 返回指定格式的导出内容 |
 | `TestHandleExportMissingReviewID` | 验证显式指定不存在的 reviewID 返回 404（不静默回退当前 review） |
 | `TestHandleGetTemplate` / `TestHandleSaveTemplate` | 验证导出模板读取与保存 |
+| `TestHandleSaveTemplateRejectsRecursion` | 验证递归模板保存被 400 拒绝 |
 
 **鉴权与路径安全**
 
@@ -146,6 +155,8 @@ go test ./internal/server/ -v
 | `TestWorkspaceDataIsolation` | 验证两个工作目录的评论数据互不可见 |
 | `TestHandleBrowse` | 验证目录浏览（隐藏目录与文件被过滤、parent 计算、无效路径 400） |
 | `TestHandleBrowseTruncated` | 验证超过 500 个目录时流式读取截断并标记 `truncated=true` |
+| `TestHandleBrowseExactBoundary` | 验证恰好 500 个目录不误报截断、501 个正确截断 |
+| `TestRequestBodyLimit` | 验证超过 10MB 的请求体被拒绝（400） |
 | `TestRestrictedSwitchWorkdir` / `TestRestrictedBrowse` / `TestRestrictedWorkdirInfo` | 验证 allowed_dirs 受限模式下的放行/拒绝与信息标记 |
 | `TestWorkspaceIDStable` | 验证相对路径/符号链接与绝对路径产生相同 workspace ID |
 
@@ -166,5 +177,5 @@ go test ./internal/server/ -v
 ## 测试统计
 
 - **总测试包数**：5 个
-- **总测试函数**：82 个
+- **总测试函数**：93 个
 - **全部通过状态**：✅ `PASS`（`go test -race -count=1 ./internal/...`）

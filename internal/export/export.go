@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -102,6 +103,9 @@ func BuildReviewExport(diff *models.DiffResponse, comments []models.Comment) *Re
 
 // RenderTemplate 使用用户自定义的 text/template 模板渲染导出内容
 func RenderTemplate(diff *models.DiffResponse, comments []models.Comment, tplContent string) (string, error) {
+	if err := ValidateTemplate(tplContent); err != nil {
+		return "", err
+	}
 	data := BuildReviewExport(diff, comments)
 	t, err := template.New("export").Parse(tplContent)
 	if err != nil {
@@ -112,6 +116,17 @@ func RenderTemplate(diff *models.DiffResponse, comments []models.Comment, tplCon
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// forbiddenTemplateAction 匹配 define/template/block 动作（含空白与修剪标记变体；block 同样可递归）
+var forbiddenTemplateAction = regexp.MustCompile(`\{\{-?\s*(define|template|block)\b`)
+
+// ValidateTemplate 校验模板安全性：禁止 define/template 动作（递归模板可使进程栈溢出崩溃且不可恢复）
+func ValidateTemplate(tplContent string) error {
+	if forbiddenTemplateAction.MatchString(tplContent) {
+		return fmt.Errorf("template actions {{define}}/{{template}} are not allowed")
+	}
+	return nil
 }
 
 // findCodeContext 根据 lineKey 在 fileDiff 中定位对应代码行与 hunk header

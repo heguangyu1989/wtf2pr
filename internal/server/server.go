@@ -152,6 +152,9 @@ func (s *Server) migrateLegacyData(wsDir string) {
 					_ = os.Remove(src)
 				}
 			}
+		} else {
+			// 旧版 0644 文件迁移后统一收紧权限
+			_ = os.Chmod(dst, 0600)
 		}
 	}
 }
@@ -159,6 +162,7 @@ func (s *Server) migrateLegacyData(wsDir string) {
 func (s *Server) setupRoutes() {
 	api := s.engine.Group("/api")
 	api.Use(s.authMiddleware())
+	api.Use(bodyLimitMiddleware())
 	{
 		api.GET("/auth/check", s.handleAuthCheck)
 		api.GET("/diff", s.handleGetDiff)
@@ -190,7 +194,15 @@ func (s *Server) setupRoutes() {
 // Run 启动服务
 func (s *Server) Run(host string, port int) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
-	return s.engine.Run(addr)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.engine,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 func corsMiddleware() gin.HandlerFunc {
@@ -206,6 +218,16 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// maxRequestBodyBytes 限制 API 请求体大小，防止超大 POST 耗尽内存
+const maxRequestBodyBytes = 10 << 20 // 10MB
+
+func bodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+		c.Next()
+	}
+}
+
 // authMiddleware 校验访问令牌；server 未配置 token 时直接放行
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -214,8 +236,8 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 		token := ""
-		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-			token = strings.TrimPrefix(auth, "Bearer ")
+		if v, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer "); ok {
+			token = v
 		}
 		if token == "" {
 			token = c.GetHeader("X-Auth-Token")
@@ -267,12 +289,30 @@ func (s *Server) currentReviewID() string {
 // reviewIDPattern 校验 review ID 合法性，防止路径遍历越出存储目录
 var reviewIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
+// defaultReviewID 默认 review（review.json）在历史列表与切换中使用的标识
+const defaultReviewID = "default"
+
 // reviewFileForIDLocked 返回指定 ID 的 review 文件路径；ID 不合法时返回空字符串。调用方必须已持有 s.mu（读或写）
 func (s *Server) reviewFileForIDLocked(id string) string {
+	if id == defaultReviewID {
+		return filepath.Join(s.storageDir, "review.json")
+	}
 	if !reviewIDPattern.MatchString(id) {
 		return ""
 	}
 	return filepath.Join(s.storageDir, "review_"+id+".json")
+}
+
+// readReviewByIDLocked 持读锁按 ID 读取 review 文件内容；ID 非法返回空字符串路径
+func (s *Server) readReviewByIDLocked(id string) (string, []byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	reviewFile := s.reviewFileForIDLocked(id)
+	if reviewFile == "" {
+		return "", nil, nil
+	}
+	data, err := os.ReadFile(reviewFile)
+	return reviewFile, data, err
 }
 
 func (s *Server) handleAuthCheck(c *gin.Context) {
@@ -428,7 +468,8 @@ func (s *Server) handleBrowse(c *gin.Context) {
 	// 流式分批读取，避免巨型目录一次性全部物化；截断时列表为目录序前 500 条（局部排序）
 	const maxEntries = 500
 	const batchSize = 128
-	for len(resp.Dirs) < maxEntries {
+scan:
+	for {
 		batch, rerr := f.ReadDir(batchSize)
 		for _, entry := range batch {
 			name := entry.Name()
@@ -446,11 +487,12 @@ func (s *Server) handleBrowse(c *gin.Context) {
 			if !isDir {
 				continue
 			}
-			resp.Dirs = append(resp.Dirs, models.DirEntry{Name: name, Path: full, IsGit: git.HasGitDir(full)})
 			if len(resp.Dirs) >= maxEntries {
+				// 集满 500 条后仍存在可见目录才确认截断（恰好 500 条不误报）
 				resp.Truncated = true
-				break
+				break scan
 			}
+			resp.Dirs = append(resp.Dirs, models.DirEntry{Name: name, Path: full, IsGit: git.HasGitDir(full)})
 		}
 		if rerr != nil {
 			// io.EOF 表示读完；分批读取的其他错误已体现在已收集的结果中
@@ -513,14 +555,7 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		return
 	}
 	// 持读锁贯穿"取路径+读文件"，避免与 workdir 切换交错读到旧 workspace 的文件
-	s.mu.RLock()
-	reviewFile := s.reviewFileForIDLocked(id)
-	var data []byte
-	var err error
-	if reviewFile != "" {
-		data, err = os.ReadFile(reviewFile)
-	}
-	s.mu.RUnlock()
+	reviewFile, data, err := s.readReviewByIDLocked(id)
 	if reviewFile == "" {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 		return
@@ -541,7 +576,7 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		pr.Type = string(models.DiffTypeWorking)
 	}
 	if pr.Type == string(models.DiffTypeCommit) && pr.Commit != "" {
-		pr.CommitExists = git.CommitExists(s.getWorkDir(), pr.Commit)
+		pr.CommitExists = git.CommitsExist(s.getWorkDir(), []string{pr.Commit})[pr.Commit]
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
 }
@@ -563,14 +598,17 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 
 	// 如果评论为空，直接删除文件（不写入历史）
 	if len(req.Comments) == 0 {
-		s.store.Save(&models.PersistedReview{
+		if err := s.store.Save(&models.PersistedReview{
 			ReviewID:  reviewID,
 			Type:      string(req.Type),
 			Commit:    req.Commit,
 			CreatedAt: old.CreatedAt,
 			UpdatedAt: now,
 			Comments:  []models.Comment{},
-		})
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+			return
+		}
 		c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
 		return
 	}
@@ -598,8 +636,23 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 		Diff:      diffData,
 		Comments:  req.Comments,
 	}
-	s.store.Save(persisted)
+	if err := s.store.Save(persisted); err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
+}
+
+// reviewListMeta 列表场景下的轻量解析结构：只取所需字段，避免物化内嵌 diff
+type reviewListMeta struct {
+	Type      string           `json:"type"`
+	Commit    string           `json:"commit"`
+	CreatedAt int64            `json:"createdAt"`
+	UpdatedAt int64            `json:"updatedAt"`
+	Comments  []models.Comment `json:"comments"`
+	Diff      *struct {
+		CommitInfo *models.CommitInfo `json:"commitInfo"`
+	} `json:"diff"`
 }
 
 func (s *Server) handleGetReviews(c *gin.Context) {
@@ -607,30 +660,29 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 	dir := s.getStorageDir()
 	entries, err := os.ReadDir(dir)
 	if err == nil {
-		// 轻量解析：只取列表所需字段，避免把内嵌 diff 全部物化进内存
-		var hashes []string
+		// 候选文件：默认 review.json（id 为 default）+ 命名 review_<id>.json
+		type candidate struct{ id, name string }
+		candidates := []candidate{{id: defaultReviewID, name: "review.json"}}
 		for _, entry := range entries {
 			name := entry.Name()
-			if !strings.HasPrefix(name, "review_") || !strings.HasSuffix(name, ".json") {
-				continue
-			}
-			id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
-			item := models.ReviewListItem{
-				ReviewID:   id,
-				ReviewFile: name,
-			}
-			fp := filepath.Join(dir, name)
-			if data, err := os.ReadFile(fp); err == nil {
-				var pr struct {
-					Type      string           `json:"type"`
-					Commit    string           `json:"commit"`
-					CreatedAt int64            `json:"createdAt"`
-					UpdatedAt int64            `json:"updatedAt"`
-					Comments  []models.Comment `json:"comments"`
-					Diff      *struct {
-						CommitInfo *models.CommitInfo `json:"commitInfo"`
-					} `json:"diff"`
+			if strings.HasPrefix(name, "review_") && strings.HasSuffix(name, ".json") {
+				id := strings.TrimSuffix(strings.TrimPrefix(name, "review_"), ".json")
+				if id == defaultReviewID {
+					// review_default.json 与 review.json 的 default 特判冲突，跳过避免死链条目
+					continue
 				}
+				candidates = append(candidates, candidate{id: id, name: name})
+			}
+		}
+		var hashes []string
+		for _, cand := range candidates {
+			item := models.ReviewListItem{
+				ReviewID:   cand.id,
+				ReviewFile: cand.name,
+			}
+			fp := filepath.Join(dir, cand.name)
+			if data, err := os.ReadFile(fp); err == nil {
+				var pr reviewListMeta
 				if err := json.Unmarshal(data, &pr); err == nil {
 					item.Type = pr.Type
 					item.Commit = strings.TrimSpace(pr.Commit)
@@ -680,7 +732,7 @@ func (s *Server) handleNewReview(c *gin.Context) {
 	reviewID := id.String()
 
 	s.mu.Lock()
-	s.reviewFile = filepath.Join(s.storageDir, "review_"+reviewID+".json")
+	s.reviewFile = s.reviewFileForIDLocked(reviewID)
 	s.store.SwitchFile(s.reviewFile)
 	reviewFile := s.reviewFile
 	s.mu.Unlock()
@@ -697,14 +749,15 @@ func (s *Server) handleSwitchReview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	if !reviewIDPattern.MatchString(req.ReviewID) {
-		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
-		return
-	}
 
 	// 路径构造、存在性检查与切换在同一把锁内完成，避免与 workdir 切换交错
 	s.mu.Lock()
-	reviewFile := filepath.Join(s.storageDir, "review_"+req.ReviewID+".json")
+	reviewFile := s.reviewFileForIDLocked(req.ReviewID)
+	if reviewFile == "" {
+		s.mu.Unlock()
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
+		return
+	}
 	if _, err := os.Stat(reviewFile); err != nil {
 		s.mu.Unlock()
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "review not found"})
@@ -732,14 +785,7 @@ func (s *Server) handleExport(c *gin.Context) {
 
 	if req.ReviewID != "" {
 		// 持读锁贯穿"取路径+读文件"，避免与 workdir 切换交错读到旧 workspace 的文件
-		s.mu.RLock()
-		reviewFile := s.reviewFileForIDLocked(req.ReviewID)
-		var data []byte
-		var err error
-		if reviewFile != "" {
-			data, err = os.ReadFile(reviewFile)
-		}
-		s.mu.RUnlock()
+		reviewFile, data, err := s.readReviewByIDLocked(req.ReviewID)
 		if reviewFile == "" {
 			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 			return
@@ -818,7 +864,11 @@ func (s *Server) handleSaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	if err := os.WriteFile(s.templatePath(), []byte(req.Content), 0600); err != nil {
+	if err := export.ValidateTemplate(req.Content); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	if err := review.WriteFileAtomic(s.templatePath(), []byte(req.Content), 0600); err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
 	}

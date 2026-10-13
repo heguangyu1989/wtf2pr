@@ -132,10 +132,11 @@
               <div class="mt-3 flex items-center gap-2">
                 <button
                   v-if="r.type === 'commit' && r.commitExists"
-                  class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition shadow-sm"
+                  class="px-3 py-1.5 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition shadow-sm disabled:opacity-50"
+                  :disabled="!!switchingReview"
                   @click="onSwitchHistoryReview(r)"
                 >
-                  切换并编辑
+                  {{ switchingReview === r.reviewID ? '切换中…' : '切换并编辑' }}
                 </button>
                 <button
                   class="px-3 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
@@ -216,7 +217,7 @@ Message: {{.CommitInfo.Message}}
     <HelpModal v-if="showHelp" @close="showHelp = false" />
     <WorkdirModal
       v-if="showWorkdir"
-      :has-unsaved="!saved && comments.length > 0"
+      :has-unsaved="isDirty"
       @close="showWorkdir = false"
       @switched="onWorkdirSwitched"
       @unauthorized="authed = false; showWorkdir = false"
@@ -235,7 +236,7 @@ Message: {{.CommitInfo.Message}}
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import DiffViewer from './components/DiffViewer.vue'
 import ExportModal from './components/ExportModal.vue'
@@ -275,6 +276,7 @@ const reviewList = ref([])
 
 const historyReviewData = ref(null)
 const templateContent = ref('')
+const switchingReview = ref('')
 
 function guardAuth(e) {
   if (e && e.status === 401) {
@@ -284,7 +286,7 @@ function guardAuth(e) {
   return false
 }
 
-// 上下文世代号：仅在 tab 切换 / workdir 切换 / 重新认证时 +1，用于守卫评论、配置、历史列表等上下文数据的回写
+// 上下文世代号：在 tab 切换 / workdir 切换 / 重新认证 / 切换历史 review 时 +1，用于守卫评论、配置、历史列表等上下文数据的回写
 let epoch = 0
 // 重置流程计数（支持嵌套），>0 时抑制 watch，由重置方显式顺序加载
 let resetting = 0
@@ -297,9 +299,12 @@ let diffSeq = 0
 // commit 列表加载序号：仅最新一次 loadCommits 生效
 let commitSeq = 0
 
+// 脏状态：有未保存的评论（统一判定，供确认拦截/头部徽标/beforeunload 使用）
+const isDirty = computed(() => !saved.value && comments.value.length > 0)
+
 // 有未保存评论时请求用户确认
 function confirmDiscardIfDirty() {
-  if (!saved.value && comments.value.length > 0) {
+  if (isDirty.value) {
     return window.confirm('当前有未保存的评论，继续操作将丢弃，确认继续？')
   }
   return true
@@ -307,7 +312,12 @@ function confirmDiscardIfDirty() {
 
 function onTabClick(key) {
   if (key === activeTab.value) return
-  if (activeTab.value === 'commit' && !confirmDiscardIfDirty()) return
+  if (activeTab.value === 'commit') {
+    if (!confirmDiscardIfDirty()) return
+    // 用户已确认丢弃，评论与脏标记同步清理，避免后续误判未保存
+    comments.value = []
+    saved.value = true
+  }
   activeTab.value = key
 }
 
@@ -346,6 +356,7 @@ async function loadTab(tab) {
   const e = ++epoch
   if (tab === 'working') {
     comments.value = []
+    saved.value = true
     await loadDiff('working')
   } else if (tab === 'commit') {
     if (commitList.value.length === 0) {
@@ -364,6 +375,7 @@ async function loadTab(tab) {
         skipHashWatch = true
         selectedCommitHash.value = review.commit
         comments.value = review.comments || []
+        ensureCommitOption(review.commit, review.diff?.commitInfo?.message)
         await loadDiff('commit', review.commit)
       } else if (review.type === 'commit' && review.commit && review.commit !== selectedCommitHash.value) {
         // 服务端评论归属于其他 commit，不展示，避免错位保存
@@ -371,6 +383,8 @@ async function loadTab(tab) {
       } else {
         comments.value = review.comments || []
       }
+      // 评论来自服务端快照，与磁盘一致，标记为已保存
+      saved.value = true
     } catch (err) {
       if (guardAuth(err)) return
       if (stale(e)) return
@@ -383,16 +397,18 @@ async function loadTab(tab) {
   }
 }
 
+// 恢复的 hash 不在当前 commit 列表页内时插入临时选项，避免下拉框显示空白
+function ensureCommitOption(hash, message = '') {
+  if (hash && !commitList.value.some(c => c.hash === hash)) {
+    commitList.value = [{ hash, message: message || '(当前 review)', author: '', date: '' }, ...commitList.value]
+  }
+}
+
 async function loadDiff(type, commit = '') {
   const seq = ++diffSeq
   loading.value = true
   error.value = ''
   try {
-    if (type === 'commit' && !commit) {
-      error.value = '请选择一个 Commit'
-      diffData.value = null
-      return
-    }
     const data = await getDiff(type, commit)
     if (seq !== diffSeq) return
     diffData.value = data
@@ -421,6 +437,8 @@ async function loadCommits() {
     commitList.value = res.list || []
     commitPage.value = res.page || 1
     commitTotalPages.value = res.totalPages || 1
+    // 列表整体替换后，恢复出的页外 hash 需要重新插入临时选项，避免下拉空白
+    ensureCommitOption(selectedCommitHash.value)
   } catch (err) {
     if (guardAuth(err)) return
     if (seq !== commitSeq) return
@@ -468,6 +486,10 @@ async function createNewReview() {
 
 async function saveReview() {
   if (activeTab.value !== 'commit') return
+  if (!selectedCommitHash.value) {
+    alert('请先选择一个 Commit')
+    return
+  }
   try {
     await apiSaveReview(comments.value, 'commit', selectedCommitHash.value)
     saved.value = true
@@ -496,14 +518,24 @@ async function doExport() {
 
 async function onSwitchHistoryReview(reviewItem) {
   if (reviewItem.type !== 'commit' || !reviewItem.commitExists) return
+  if (switchingReview.value) return
   if (!confirmDiscardIfDirty()) return
+  switchingReview.value = reviewItem.reviewID
   let review
   try {
     await apiSwitchReview(reviewItem.reviewID)
     review = await getReview()
   } catch (e) {
+    switchingReview.value = ''
     if (guardAuth(e)) return
     alert('切换 Review 失败: ' + e.message)
+    return
+  }
+  switchingReview.value = ''
+  // 两步 RPC 之间可能发生并发切换：以 reviewID 校验服务端当前 review 与目标一致，防止评论错位
+  const expectedID = reviewItem.reviewID === 'default' ? '' : reviewItem.reviewID
+  if ((review.reviewID || '') !== expectedID) {
+    alert('切换结果与预期不一致，请重试')
     return
   }
   // 抑制双 watcher，显式按顺序加载，保证评论与 diff 一致落位
@@ -518,6 +550,7 @@ async function onSwitchHistoryReview(reviewItem) {
     if (commitList.value.length === 0) {
       await loadCommits()
     }
+    ensureCommitOption(selectedCommitHash.value, reviewItem.commitMsg)
     if (selectedCommitHash.value) {
       await loadDiff('commit', selectedCommitHash.value)
     }
@@ -624,12 +657,12 @@ function formatTime(ts) {
 }
 
 async function initialize() {
-  const e = epoch
+  const e = ++epoch
   await loadDiff('working')
   // selectedCommitHash 的恢复由 loadTab('commit') 在进入 commit 页时统一处理
+  // getConfig 是全局数据（仅 workdir 切换会使其失效，而切换走重置窗口串行），不参与 epoch 守卫
   try {
     const cfg = await getConfig()
-    if (stale(e)) return
     workDir.value = cfg.workDir || workDir.value
     if (cfg.reviewID) {
       reviewLabel.value = `Review ID: ${cfg.reviewID.substring(0, 8)}`
@@ -638,7 +671,6 @@ async function initialize() {
     }
   } catch (err) {
     if (guardAuth(err)) return
-    if (stale(e)) return
     reviewLabel.value = ''
   }
   await loadReviews(e)
@@ -646,7 +678,7 @@ async function initialize() {
 
 async function onAuthenticated() {
   // 401 可能发生在任意标签页，重新认证后统一回到 working 视图，避免状态错位
-  if (!saved.value && comments.value.length > 0) {
+  if (isDirty.value) {
     window.alert('服务认证已更新，未保存的评论已被重置，请重新确认后再提交')
   }
   await withResetWindow(async () => {
@@ -673,10 +705,11 @@ onMounted(async () => {
 })
 
 // 有未保存评论时拦截页面关闭/刷新
-window.addEventListener('beforeunload', (e) => {
-  if (!saved.value && comments.value.length > 0) {
+function onBeforeUnload(e) {
+  if (isDirty.value) {
     e.preventDefault()
     e.returnValue = ''
   }
-})
+}
+window.addEventListener('beforeunload', onBeforeUnload)
 </script>

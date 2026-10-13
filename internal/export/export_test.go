@@ -222,3 +222,19 @@ func TestRenderTemplate(t *testing.T) {
 		t.Errorf("expected readme.md to be omitted")
 	}
 }
+
+func TestValidateTemplateRejectsRecursion(t *testing.T) {
+	evil := `{{define "a"}}{{template "a"}}{{end}}{{template "a"}}`
+	if _, err := RenderTemplate(&models.DiffResponse{Files: []models.FileDiff{}}, nil, evil); err == nil {
+		t.Errorf("expected recursive template to be rejected")
+	}
+	variants := []string{`{{ define "a" }}{{end}}`, `{{- template "x" -}}`, `{{block "T" .}}x{{end}}`}
+	for _, v := range variants {
+		if err := ValidateTemplate(v); err == nil {
+			t.Errorf("expected %q to be rejected", v)
+		}
+	}
+	if err := ValidateTemplate(`{{range .Files}}{{.Path}}{{end}}`); err != nil {
+		t.Errorf("expected normal template to pass: %v", err)
+	}
+}

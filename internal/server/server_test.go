@@ -1212,3 +1212,205 @@ func TestHandleBrowseTruncated(t *testing.T) {
 		t.Errorf("expected truncated=true")
 	}
 }
+
+func TestHandleGetReviewsCommitExists(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	// 取仓库真实 HEAD hash
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	head := strings.TrimSpace(string(mustOutput(t, cmd)))
+	bogus := "1111111111111111111111111111111111111111"
+
+	// 种子两个 commit 类型 review：一个指向存在的 commit，一个指向不存在的
+	seed := func(id, commit string) {
+		body := `{"reviewID":"` + id + `","type":"commit","commit":"` + commit + `","createdAt":1,"updatedAt":2,"diff":{"type":"commit","commitInfo":{"hash":"` + commit + `","message":"m"}},"comments":[{"id":"1","filePath":"a.txt","content":"c"}]}`
+		if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_"+id+".json"), []byte(body), 0600); err != nil {
+			t.Fatalf("failed to seed review: %v", err)
+		}
+	}
+	seed("liveone", head)
+	seed("goneone", bogus)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/reviews", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	items := resp.Data.([]interface{})
+	exists := map[string]bool{}
+	types := map[string]string{}
+	for _, it := range items {
+		m := it.(map[string]interface{})
+		exists[m["reviewID"].(string)] = m["commitExists"].(bool)
+		types[m["reviewID"].(string)] = m["type"].(string)
+	}
+	if !exists["liveone"] {
+		t.Errorf("expected liveone commitExists=true, got %v", exists)
+	}
+	if exists["goneone"] {
+		t.Errorf("expected goneone commitExists=false, got %v", exists)
+	}
+	if types["liveone"] != "commit" || types["goneone"] != "commit" {
+		t.Errorf("expected commit type inferred, got %v", types)
+	}
+
+	// detail 接口同样校验 commitExists 真值路径
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/review/detail?id=liveone", nil)
+	srv.engine.ServeHTTP(w2, req2)
+	var resp2 models.APIResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	detail := resp2.Data.(map[string]interface{})
+	if detail["commitExists"] != true {
+		t.Errorf("expected detail commitExists=true, got %v", detail["commitExists"])
+	}
+}
+
+func mustOutput(t *testing.T, cmd *exec.Cmd) []byte {
+	t.Helper()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("command failed: %v", err)
+	}
+	return out
+}
+
+func TestDefaultReviewListedAndSwitchable(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 默认 review.json 有评论时应以 default 身份出现在历史列表，且可切换/查看详情
+	seed := `{"reviewID":"","type":"working","createdAt":1,"updatedAt":2,"comments":[{"id":"1","filePath":"a.txt","content":"legacy-default"}]}`
+	if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review.json"), []byte(seed), 0600); err != nil {
+		t.Fatalf("failed to seed default review: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/reviews", nil)
+	srv.engine.ServeHTTP(w, req)
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	found := false
+	for _, it := range resp.Data.([]interface{}) {
+		m := it.(map[string]interface{})
+		if m["reviewID"] == "default" && m["reviewFile"] == "review.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected default review.json in history list")
+	}
+
+	// 切走后可切回 default
+	wNew := httptest.NewRecorder()
+	reqNew, _ := http.NewRequest("POST", "/api/review/new", nil)
+	srv.engine.ServeHTTP(wNew, reqNew)
+	body, _ := json.Marshal(models.SwitchReviewRequest{ReviewID: "default"})
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/review/switch", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 switching to default, got %d", w2.Code)
+	}
+	// 切回后评论应加载
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/review", nil)
+	srv.engine.ServeHTTP(w3, req3)
+	var resp3 models.APIResponse
+	if err := json.Unmarshal(w3.Body.Bytes(), &resp3); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	comments := resp3.Data.(map[string]interface{})["comments"].([]interface{})
+	if len(comments) != 1 || comments[0].(map[string]interface{})["content"] != "legacy-default" {
+		t.Errorf("expected default review comments loaded, got %v", comments)
+	}
+
+	// detail?id=default 可读
+	w4 := httptest.NewRecorder()
+	req4, _ := http.NewRequest("GET", "/api/review/detail?id=default", nil)
+	srv.engine.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Errorf("expected 200 for detail?id=default, got %d", w4.Code)
+	}
+}
+
+func TestHandleBrowseExactBoundary(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	mk := func(n int) string {
+		parent := t.TempDir()
+		for i := 0; i < n; i++ {
+			_ = os.MkdirAll(filepath.Join(parent, "d"+strconv.Itoa(i)), 0755)
+		}
+		return parent
+	}
+
+	// 恰好 500 个可见目录不应标记截断
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+mk(500), nil)
+	srv.engine.ServeHTTP(w, req)
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["truncated"] == true {
+		t.Errorf("exactly 500 dirs should not be truncated")
+	}
+	if len(data["dirs"].([]interface{})) != 500 {
+		t.Errorf("expected 500 dirs")
+	}
+
+	// 501 个应标记截断且仅返回 500
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/fs/browse?path="+mk(501), nil)
+	srv.engine.ServeHTTP(w2, req2)
+	var resp2 models.APIResponse
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data2 := resp2.Data.(map[string]interface{})
+	if data2["truncated"] != true {
+		t.Errorf("501 dirs should be truncated")
+	}
+	if len(data2["dirs"].([]interface{})) != 500 {
+		t.Errorf("expected capped 500 dirs")
+	}
+}
+
+func TestRequestBodyLimit(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 超过 10MB 的请求体应被拒绝
+	big := make([]byte, 11<<20)
+	for i := range big {
+		big[i] = 'a'
+	}
+	body := append([]byte(`{"comments":[{"id":"1","filePath":"`), big...)
+	body = append(body, []byte(`","content":"x"}],"type":"working"}`)...)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized body, got %d", w.Code)
+	}
+}
+
+func TestHandleSaveTemplateRejectsRecursion(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	body, _ := json.Marshal(models.TemplateContent{Content: `{{define "a"}}{{template "a"}}{{end}}{{template "a"}}`})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/template", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for recursive template, got %d", w.Code)
+	}
+}

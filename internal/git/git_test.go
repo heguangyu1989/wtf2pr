@@ -1,10 +1,14 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
@@ -93,16 +97,27 @@ func TestReadUntrackedFileAsDiff_NotFound(t *testing.T) {
 }
 
 func TestGetUntrackedFiles(t *testing.T) {
-	dir := t.TempDir()
-	// init git repo
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
-		t.Fatalf("failed to create .git: %v", err)
+	dir := initGitRepo(t)
+	// 新建未跟踪文件应出现在列表中；已跟踪文件不应出现
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x\n"), 0644); err != nil {
+		t.Fatalf("failed to write: %v", err)
 	}
-	// Without real git executable this test is limited; verify non-git path returns error
-	_, err := getUntrackedFiles(dir)
-	// git ls-files on a bare .git dir without actual init may succeed or fail depending on git version.
-	// We just ensure no panic; err is acceptable.
-	_ = err
+	files, err := getUntrackedFiles(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, f := range files {
+		if f == "untracked.txt" {
+			found = true
+		}
+		if f == "a.txt" {
+			t.Errorf("tracked file a.txt should not be listed")
+		}
+	}
+	if !found {
+		t.Errorf("expected untracked.txt in list, got %v", files)
+	}
 }
 
 func TestReadUntrackedFileAsDiff_SymlinkSkipped(t *testing.T) {
@@ -147,9 +162,9 @@ func TestGetCommitDiff_RejectsOptionInjection(t *testing.T) {
 	}
 }
 
-func TestCommitExists_RejectsInvalidRef(t *testing.T) {
+func TestCommitsExistRejectsInvalidRef(t *testing.T) {
 	dir := initGitRepo(t)
-	if CommitExists(dir, "--output=/tmp/x") {
+	if CommitsExist(dir, []string{"--output=/tmp/x"})["--output=/tmp/x"] {
 		t.Errorf("expected invalid ref to return false")
 	}
 }
@@ -187,12 +202,12 @@ func TestCommitsExistBatch(t *testing.T) {
 
 func TestRunGitCappedTruncation(t *testing.T) {
 	dir := initGitRepo(t)
-	// 构造较大的未提交变更
-	big := make([]byte, 4096)
-	for i := range big {
-		big[i] = 'a' + byte(i%26)
+	// 构造超过 64KB 管道缓冲的未提交变更（截断后 git 会阻塞在 write，可捕获不排空管道的死锁回归）
+	var sb strings.Builder
+	for i := 0; i < 100000; i++ {
+		sb.WriteString("abcdefghij")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), append(big, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(sb.String()+"\n"), 0644); err != nil {
 		t.Fatalf("failed to write: %v", err)
 	}
 
@@ -200,10 +215,26 @@ func TestRunGitCappedTruncation(t *testing.T) {
 	maxGitOutputBytes = 512
 	t.Cleanup(func() { maxGitOutputBytes = old })
 
-	out, truncated, err := runGitCapped(dir, "diff", "HEAD")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	type result struct {
+		out       []byte
+		truncated bool
+		err       error
 	}
+	done := make(chan result, 1)
+	go func() {
+		out, truncated, err := runGitCapped(dir, "diff", "HEAD")
+		done <- result{out, truncated, err}
+	}()
+	var res result
+	select {
+	case res = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("runGitCapped deadlocked on oversized diff")
+	}
+	if res.err != nil {
+		t.Fatalf("unexpected error: %v", res.err)
+	}
+	out, truncated := res.out, res.truncated
 	if !truncated {
 		t.Fatalf("expected truncated=true, got %d bytes", len(out))
 	}
@@ -272,5 +303,104 @@ func TestGetWorkingDiffTruncatedFlag(t *testing.T) {
 	}
 	if !resp.Truncated {
 		t.Errorf("expected DiffResponse.Truncated=true")
+	}
+}
+
+func TestGetUntrackedFilesReal(t *testing.T) {
+	dir := initGitRepo(t)
+	// 新建未跟踪文件应出现在列表中（含空格与非 ASCII 文件名）
+	for _, name := range []string{"hello world.txt", "你好.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x\n"), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", name, err)
+		}
+	}
+	files, err := getUntrackedFiles(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	set := map[string]bool{}
+	for _, f := range files {
+		set[f] = true
+	}
+	if !set["hello world.txt"] {
+		t.Errorf("expected spaced filename in untracked list, got %v", files)
+	}
+	if !set["你好.txt"] {
+		t.Errorf("expected non-ASCII filename in untracked list, got %v", files)
+	}
+}
+
+func TestUntrackedFileCountCap(t *testing.T) {
+	dir := initGitRepo(t)
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(dir, "f"+strconv.Itoa(i)+".txt"), []byte("x\n"), 0644); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+	}
+	old := maxUntrackedFiles
+	maxUntrackedFiles = 2
+	t.Cleanup(func() { maxUntrackedFiles = old })
+
+	resp, err := getWorkingDiff(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Truncated {
+		t.Errorf("expected Truncated=true when untracked files exceed cap")
+	}
+}
+
+func TestTextconvNotExecuted(t *testing.T) {
+	dir := initGitRepo(t)
+	// 恶意仓库配置：textconv 驱动会在渲染 diff 时执行任意命令
+	marker := filepath.Join(t.TempDir(), "pwned.txt")
+	cfg := fmt.Sprintf("[diff \"pwn\"]\n\ttextconv = touch %s\n", marker)
+	f, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open git config: %v", err)
+	}
+	if _, err := f.WriteString(cfg); err != nil {
+		t.Fatalf("failed to write git config: %v", err)
+	}
+	f.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("a.txt diff=pwn\n"), 0644); err != nil {
+		t.Fatalf("failed to write gitattributes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatalf("failed to write a.txt: %v", err)
+	}
+
+	if _, err := getWorkingDiff(dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("textconv hook should not be executed")
+	}
+	if _, err := getCommitDiff(dir, "HEAD"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("textconv hook should not be executed on commit diff")
+	}
+}
+
+func TestParseDiffSpacedFilename(t *testing.T) {
+	raw := `diff --git a/hello world.txt b/hello world.txt
+index 257cc56..5716ca5 100644
+--- a/hello world.txt
++++ b/hello world.txt
+@@ -1 +1 @@
+-foo
++bar
+`
+	files, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].NewFile != "hello world.txt" || files[0].OldFile != "hello world.txt" {
+		t.Errorf("spaced filename parsed wrong: old=%q new=%q", files[0].OldFile, files[0].NewFile)
 	}
 }

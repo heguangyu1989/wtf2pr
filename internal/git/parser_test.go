@@ -281,3 +281,38 @@ func TestParseDiffWithLongContent(t *testing.T) {
 		t.Errorf("addition content mismatch")
 	}
 }
+
+func TestParseDiffHunkContentWithDashDashPrefix(t *testing.T) {
+	// hunk 内删除以 "-- " 开头、新增以 "++ " 开头的行时，不得被误判为文件头
+	raw := `diff --git a/x.txt b/x.txt
+index 257cc56..5716ca5 100644
+--- a/x.txt
++++ b/x.txt
+@@ -1,3 +1,3 @@
+ context
+--- foo
+--- baz
++++ bar
++++ qux
+`
+	files, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].OldFile != "x.txt" || files[0].NewFile != "x.txt" {
+		t.Errorf("filename corrupted by hunk content: old=%q new=%q", files[0].OldFile, files[0].NewFile)
+	}
+	if len(files[0].Hunks) != 1 || len(files[0].Hunks[0].Lines) != 5 {
+		t.Fatalf("expected 5 hunk lines preserved, got %+v", files[0].Hunks)
+	}
+	lines := files[0].Hunks[0].Lines
+	if lines[1].Type != models.LineTypeDeletion || lines[1].Content != "-- foo" {
+		t.Errorf("deletion line with -- prefix parsed wrong: %+v", lines[1])
+	}
+	if lines[4].Type != models.LineTypeAddition || lines[4].Content != "++ qux" {
+		t.Errorf("addition line with ++ prefix parsed wrong: %+v", lines[4])
+	}
+}

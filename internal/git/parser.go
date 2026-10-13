@@ -51,7 +51,22 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 			current.IsBinary = true
 			continue
 		}
-		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+		// 文件名以 --- / +++ 行为准（diff --git 头对含空格的文件名会错位）；
+		// 仅当尚未进入 hunk 时才按文件头处理（hunk 内 --- / +++ 前缀的行是删除/新增的内容行）
+		if currentHunk == nil && strings.HasPrefix(line, "--- ") {
+			if line == "--- /dev/null" {
+				current.OldFile = ""
+			} else {
+				current.OldFile = strings.TrimPrefix(line[4:], "a/")
+			}
+			continue
+		}
+		if currentHunk == nil && strings.HasPrefix(line, "+++ ") {
+			if line == "+++ /dev/null" {
+				current.NewFile = ""
+			} else {
+				current.NewFile = strings.TrimPrefix(line[4:], "b/")
+			}
 			continue
 		}
 		if strings.HasPrefix(line, "@@ ") {

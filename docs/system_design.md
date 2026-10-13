@@ -16,7 +16,7 @@
 1. 后端通过 `github.com/spf13/cobra` 提供命令行入口。
 2. 后端通过 Go 官方 `embed` 将前端页面打包到一个可执行二进制文件。
 3. 通过 `wtf2pr web [--config={配置文件}] [--port={端口}] [--workdir={工作目录}]` 指令启动服务；服务配置集中在 YAML 配置文件（默认 `~/.wtf2pr/config.yaml`），支持 `port` / `host` / `workdir` / `token` / `allowed_dirs`；`port` 与 `workdir` 支持 CLI 覆盖（优先级：CLI 显式指定 > 配置文件 > 默认值），其余配置项以配置文件为准。
-4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录（目标必须是 git 仓库），旧版扁平存储数据首次启动时自动迁移。
+4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录（目标必须是 git 仓库），旧版扁平存储数据在对应工作区数据区首次创建时自动迁移。
 5. 访问令牌为空时每次启动随机生成（可在配置文件中指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer`、`X-Auth-Token` 头或 `?token=` 查询参数）。
 6. 配置文件 `allowed_dirs` 限制 Web 端可访问的文件路径范围；切换工作目录与目录浏览越界时返回 403。
 
@@ -40,16 +40,17 @@
   - 路径规范化（`~` 展开、绝对化、符号链接解析）与目录边界匹配，为 `allowed_dirs` 访问控制提供判定。
 - **Git 模块**：
   - 执行 `git diff HEAD` 获取已跟踪文件的未提交变更。
-  - 执行 `git ls-files --others --exclude-standard` 补充未跟踪（untracked）文件（仅普通文件，超过 1MB 按二进制占位）。
+  - 执行 `git ls-files --others --exclude-standard -z` 补充未跟踪（untracked）文件（NUL 分割支持空格/非 ASCII 文件名；仅普通文件，单文件超过 1MB 按二进制占位，数量超过 500 截断）。
   - 执行 `git show {commit}` 获取指定 Commit 的 Diff 与 Commit 元信息。
   - 执行 `git log` + `git rev-list --count` 实现分页 Commit 列表查询（`page_size` 上限 100）。
-  - 内置 Unified Diff 解析器，将 diff 文本解析为结构化数据（文件 → Hunk → 行）。
-  - 所有 git 输出经 `runGitCapped` 限制在 20MB（超限截断并标记 `DiffResponse.Truncated`）；commit 引用白名单校验 + `--end-of-options` 防选项注入；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
+  - 内置 Unified Diff 解析器，将 diff 文本解析为结构化数据（文件 → Hunk → 行；文件名以 `--- `/`+++ ` 行为准，支持含空格文件名）。
+  - diff 类输出（`git diff HEAD` / `git show -p`）经 `runGitCapped` 限制在 20MB（超限排空管道后截断并标记 `DiffResponse.Truncated`）。
+  - 安全基线：commit 引用白名单校验 + `--end-of-options` 防选项注入；`--no-ext-diff --no-textconv` + 禁用 fsmonitor hook 防恶意仓库配置执行命令；`core.quotePath=false` 防文件名转义错位；git 子进程环境变量白名单过滤（去除 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG*` 等劫持向量）；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
 - **Review 模块**：
-  - 内存存储 + JSON 文件持久化，线程安全（`sync.RWMutex`）。
+  - 内存存储 + JSON 文件持久化（临时文件 + 原子替换，权限 0600），线程安全（`sync.RWMutex`）。
   - 支持 `SwitchFile` 动态切换存储文件，切换时自动加载该文件已有评论。
   - 新建 Review 时生成 UUID 并切换存储路径，文件在首次非空保存时才写入 `review_{uuid}.json`（空评论保存则删除文件）。
-  - 提供扫描目录接口，列出有评论的历史 Review 文件（零评论文件被过滤）。
+  - 提供扫描目录接口，列出有评论的历史 Review 文件（零评论文件被过滤；默认 `review.json` 以 `default` 标识入列，可切换/查看）。
 - **Export 模块**：
   - 仅导出**包含 Review 评论的核心信息**，避免完整 diff 原文导致的 Token 冗余。
   - 输出包含：Commit 元信息、被评论文件路径、评论内容、对应代码行、Hunk Header。
@@ -57,6 +58,8 @@
 - **Server 模块**：
   - 提供 RESTful API（`/api/auth/check`、`/api/diff`、`/api/commits`、`/api/config`、`/api/review`、`/api/review/detail`、`/api/reviews`、`/api/review/new`、`/api/review/switch`、`/api/export`、`/api/template`、`/api/workdir`、`/api/fs/browse`）。
   - 所有 API 经 token 鉴权中间件（常量时间比较）；review ID 经白名单校验，防止路径遍历越出存储目录。
+  - 请求体上限 10MB；HTTP 服务器配置 ReadHeader/Read/Write/Idle 超时。
+  - 自定义导出模板经安全校验（禁止 `{{define}}/{{template}}` 递归动作），模板文件与 review 数据落盘均为原子写 + 0600。
   - 切换 workdir/review 与保存互斥（统一 `s.mu → store.mu` 锁序），避免并发交错。
   - 静态文件服务通过 `NoRoute` 兜底，将未匹配路由指向 embed 的前端资源。
 

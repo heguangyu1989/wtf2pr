@@ -28,47 +28,14 @@
       </div>
 
       <div class="flex-1 overflow-hidden">
-        <!-- Commit review with diff snapshot -->
-        <template v-if="hasDiff">
-          <div class="grid grid-cols-1 lg:grid-cols-4 gap-0 h-full">
-            <aside class="lg:col-span-1 border-r h-full overflow-hidden bg-gray-50 dark:bg-gray-950">
-              <div class="px-3 py-2 border-b bg-gray-100 dark:bg-gray-800 text-sm font-medium shrink-0">
-                文件 ({{ data.diff.files.length }})
-              </div>
-              <ul class="overflow-y-auto h-full pb-4">
-                <li
-                  v-for="(f, i) in data.diff.files"
-                  :key="i"
-                  class="px-3 py-2 text-sm border-b last:border-b-0 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800"
-                  :class="{ 'bg-blue-50 dark:bg-blue-900/20': selectedIndex === i }"
-                  @click="selectedIndex = i"
-                >
-                  <div class="truncate font-mono text-xs">{{ f.newFile || f.oldFile }}</div>
-                  <div class="text-xs text-gray-500 mt-1">
-                    <span v-if="f.isNew" class="text-green-600">新增</span>
-                    <span v-else-if="f.isDeleted" class="text-red-600">删除</span>
-                    <span v-else>修改</span>
-                  </div>
-                </li>
-              </ul>
-            </aside>
-
-            <section class="lg:col-span-3 h-full overflow-y-auto p-4 space-y-4">
-              <div v-if="commitInfo" class="border rounded-lg p-3 bg-gray-50 dark:bg-gray-800 text-sm space-y-1 shrink-0">
-                <div><span class="text-gray-500">Commit:</span> {{ commitInfo.hash }}</div>
-                <div><span class="text-gray-500">Author:</span> {{ commitInfo.author }}</div>
-                <div><span class="text-gray-500">Date:</span> {{ commitInfo.date }}</div>
-                <div><span class="text-gray-500">Message:</span> {{ commitInfo.message }}</div>
-              </div>
-
-              <ReadonlyDiffFile
-                v-if="selectedFile"
-                :file="selectedFile"
-                :comments="data.comments"
-              />
-            </section>
-          </div>
-        </template>
+        <!-- Commit review with diff snapshot：复用 DiffViewer（含截断提示与文件分页） -->
+        <DiffViewer
+          v-if="hasDiff"
+          :diff-data="data.diff"
+          :comments="data.comments"
+          :readonly="true"
+          :commit-info="data.diff?.commitInfo"
+        />
 
         <!-- No diff: just show comments list -->
         <template v-else>
@@ -98,7 +65,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import ReadonlyDiffFile from './ReadonlyDiffFile.vue'
+import DiffViewer from './DiffViewer.vue'
 
 const props = defineProps({
   data: { type: Object, required: true },
@@ -108,9 +75,6 @@ const emit = defineEmits(['close', 'export'])
 const exportFormat = ref('markdown')
 
 const hasDiff = computed(() => props.data.type === 'commit' && props.data.diff && props.data.diff.files && props.data.diff.files.length > 0)
-const commitInfo = computed(() => props.data.diff?.commitInfo || null)
-const selectedIndex = ref(0)
-const selectedFile = computed(() => props.data.diff?.files?.[selectedIndex.value] || null)
 
 function doExport() {
   emit('export', exportFormat.value)
