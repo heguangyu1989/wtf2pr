@@ -7,6 +7,7 @@
       :export-format="exportFormat"
       :review-label="reviewLabel"
       :work-dir="workDir"
+      :active-tab="activeTab"
       @save-review="saveReview"
       @do-export="doExport"
       @new-review="createNewReview"
@@ -25,7 +26,7 @@
           :class="activeTab === t.key
             ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400 font-medium'
             : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-gray-600'"
-          @click="activeTab = t.key"
+          @click="onTabClick(t.key)"
         >
           {{ t.label }}
         </button>
@@ -215,8 +216,10 @@ Message: {{.CommitInfo.Message}}
     <HelpModal v-if="showHelp" @close="showHelp = false" />
     <WorkdirModal
       v-if="showWorkdir"
+      :has-unsaved="!saved && comments.length > 0"
       @close="showWorkdir = false"
       @switched="onWorkdirSwitched"
+      @unauthorized="authed = false; showWorkdir = false"
     />
     <ReviewResultModal
       v-if="historyReviewData"
@@ -281,10 +284,53 @@ function guardAuth(e) {
   return false
 }
 
+// 上下文世代号：仅在 tab 切换 / workdir 切换 / 重新认证时 +1，用于守卫评论、配置、历史列表等上下文数据的回写
+let epoch = 0
+// 重置流程计数（支持嵌套），>0 时抑制 watch，由重置方显式顺序加载
+let resetting = 0
+function stale(e) {
+  return e !== epoch
+}
+
+// diff 加载序号：仅最新一次 loadDiff 负责写入 diffData 与复位 loading
+let diffSeq = 0
+// commit 列表加载序号：仅最新一次 loadCommits 生效
+let commitSeq = 0
+
+// 有未保存评论时请求用户确认
+function confirmDiscardIfDirty() {
+  if (!saved.value && comments.value.length > 0) {
+    return window.confirm('当前有未保存的评论，继续操作将丢弃，确认继续？')
+  }
+  return true
+}
+
+function onTabClick(key) {
+  if (key === activeTab.value) return
+  if (activeTab.value === 'commit' && !confirmDiscardIfDirty()) return
+  activeTab.value = key
+}
+
 watch(activeTab, async (tab) => {
+  if (resetting > 0) return
+  await loadTab(tab)
+})
+
+watch(selectedCommitHash, async (hash) => {
+  if (resetting > 0) return
+  if (activeTab.value !== 'commit') return
+  if (!hash) {
+    cancelDiff()
+    return
+  }
+  await loadDiff('commit', hash)
+})
+
+// 标签页数据加载（watch 与重置补偿共用同一入口）
+async function loadTab(tab) {
+  const e = ++epoch
   if (tab === 'working') {
     comments.value = []
-    diffData.value = null
     await loadDiff('working')
   } else if (tab === 'commit') {
     if (commitList.value.length === 0) {
@@ -293,59 +339,65 @@ watch(activeTab, async (tab) => {
     if (selectedCommitHash.value) {
       await loadDiff('commit', selectedCommitHash.value)
     } else {
-      diffData.value = null
+      cancelDiff()
     }
     try {
       const review = await getReview()
+      if (stale(e)) return
       comments.value = review.comments || []
-    } catch (e) {
-      if (guardAuth(e)) return
+    } catch (err) {
+      if (guardAuth(err)) return
+      if (stale(e)) return
       comments.value = []
     }
   } else if (tab === 'history') {
-    await loadReviews()
+    await loadReviews(e)
   } else if (tab === 'template') {
-    await loadTemplate()
+    await loadTemplate(e)
   }
-})
-
-watch(selectedCommitHash, async (hash) => {
-  if (activeTab.value !== 'commit') return
-  if (!hash) {
-    diffData.value = null
-    return
-  }
-  await loadDiff('commit', hash)
-})
+}
 
 async function loadDiff(type, commit = '') {
+  const seq = ++diffSeq
   loading.value = true
   error.value = ''
   try {
     if (type === 'commit' && !commit) {
       error.value = '请选择一个 Commit'
       diffData.value = null
-      loading.value = false
       return
     }
-    diffData.value = await getDiff(type, commit)
-  } catch (e) {
-    if (guardAuth(e)) return
-    error.value = e.message
+    const data = await getDiff(type, commit)
+    if (seq !== diffSeq) return
+    diffData.value = data
+  } catch (err) {
+    if (guardAuth(err)) return
+    if (seq !== diffSeq) return
+    error.value = err.message
     diffData.value = null
   } finally {
-    loading.value = false
+    if (seq === diffSeq) loading.value = false
   }
 }
 
+// 取消在途 diff 加载并清空展示
+function cancelDiff() {
+  diffSeq++
+  diffData.value = null
+  loading.value = false
+}
+
 async function loadCommits() {
+  const seq = ++commitSeq
   try {
     const res = await getCommits(commitPage.value, 10)
+    if (seq !== commitSeq) return
     commitList.value = res.list || []
     commitPage.value = res.page || 1
     commitTotalPages.value = res.totalPages || 1
-  } catch (e) {
-    if (guardAuth(e)) return
+  } catch (err) {
+    if (guardAuth(err)) return
+    if (seq !== commitSeq) return
     commitList.value = []
   }
 }
@@ -355,11 +407,14 @@ function changeCommitPage(delta) {
   loadCommits()
 }
 
-async function loadReviews() {
+async function loadReviews(e) {
   try {
-    reviewList.value = await getReviews()
-  } catch (e) {
-    if (guardAuth(e)) return
+    const list = await getReviews()
+    if (stale(e)) return
+    reviewList.value = list
+  } catch (err) {
+    if (guardAuth(err)) return
+    if (stale(e)) return
     reviewList.value = []
   }
 }
@@ -370,13 +425,14 @@ function onCommentsUpdate(list) {
 }
 
 async function createNewReview() {
+  if (!confirmDiscardIfDirty()) return
   try {
     const res = await apiNewReview()
     comments.value = []
     saved.value = true
     reviewLabel.value = res.reviewID ? `Review ID: ${res.reviewID.substring(0, 8)}` : ''
     if (activeTab.value === 'history') {
-      await loadReviews()
+      await loadReviews(epoch)
     }
   } catch (e) {
     if (guardAuth(e)) return
@@ -396,30 +452,58 @@ async function saveReview() {
 }
 
 async function doExport() {
-  try {
-    if (activeTab.value === 'working') {
-      exportResult.value = await exportReview(exportFormat.value, 'working', '')
-    } else if (activeTab.value === 'commit') {
-      exportResult.value = await exportReview(exportFormat.value, 'commit', selectedCommitHash.value)
+  // 仅在 working / commit 标签页可用，避免弹出陈旧内容
+  if (activeTab.value === 'working') {
+    exportResult.value = await exportReview(exportFormat.value, 'working', '').catch((e) => {
+      if (!guardAuth(e)) alert('导出失败: ' + e.message)
+      return null
+    })
+  } else if (activeTab.value === 'commit') {
+    if (!selectedCommitHash.value) {
+      alert('请先选择一个 Commit')
+      return
     }
+    exportResult.value = await exportReview(exportFormat.value, 'commit', selectedCommitHash.value).catch((e) => {
+      if (!guardAuth(e)) alert('导出失败: ' + e.message)
+      return null
+    })
+  } else {
+    return
+  }
+  if (exportResult.value) {
     showExport.value = true
-  } catch (e) {
-    if (guardAuth(e)) return
-    alert('导出失败: ' + e.message)
   }
 }
 
 async function onSwitchHistoryReview(reviewItem) {
   if (reviewItem.type !== 'commit' || !reviewItem.commitExists) return
+  if (!confirmDiscardIfDirty()) return
+  let review
   try {
     await apiSwitchReview(reviewItem.reviewID)
+    review = await getReview()
+  } catch (e) {
+    if (guardAuth(e)) return
+    alert('切换 Review 失败: ' + e.message)
+    return
+  }
+  // 抑制双 watcher，显式按顺序加载，保证评论与 diff 一致落位
+  resetting++
+  epoch++
+  try {
     selectedCommitHash.value = reviewItem.commit || ''
     activeTab.value = 'commit'
     reviewLabel.value = `Review ID: ${reviewItem.reviewID.substring(0, 8)}`
     saved.value = true
-  } catch (e) {
-    if (guardAuth(e)) return
-    alert('切换 Review 失败: ' + e.message)
+    comments.value = review.comments || []
+    if (commitList.value.length === 0) {
+      await loadCommits()
+    }
+    if (selectedCommitHash.value) {
+      await loadDiff('commit', selectedCommitHash.value)
+    }
+  } finally {
+    resetting--
   }
 }
 
@@ -449,12 +533,14 @@ async function onExportHistoryReview(format) {
   }
 }
 
-async function loadTemplate() {
+async function loadTemplate(e) {
   try {
     const res = await getTemplate()
+    if (stale(e)) return
     templateContent.value = res.content || ''
-  } catch (e) {
-    if (guardAuth(e)) return
+  } catch (err) {
+    if (guardAuth(err)) return
+    if (stale(e)) return
     templateContent.value = ''
   }
 }
@@ -470,8 +556,10 @@ async function onSaveTemplate() {
 }
 
 async function onWorkdirSwitched(info) {
+  resetting++
+  epoch++
   workDir.value = info.workDir || ''
-  // 工作目录切换后重置全部状态并按新目录重新加载
+  // 工作目录切换后重置全部状态并按新目录重新加载（watch 在重置期间被抑制）
   activeTab.value = 'working'
   selectedCommitHash.value = ''
   diffData.value = null
@@ -483,7 +571,15 @@ async function onWorkdirSwitched(info) {
   reviewLabel.value = ''
   saved.value = true
   error.value = ''
-  await initialize()
+  try {
+    await initialize()
+  } finally {
+    resetting--
+    if (resetting === 0 && activeTab.value !== 'working') {
+      // 重置窗口内的 tab 点击被 watch 抑制，补偿加载当前标签
+      await loadTab(activeTab.value)
+    }
+  }
 }
 
 function formatTime(ts) {
@@ -493,33 +589,52 @@ function formatTime(ts) {
 }
 
 async function initialize() {
+  const e = epoch
   await loadDiff('working')
   try {
     const review = await getReview()
+    if (stale(e)) return
     if (review.type === 'commit' && review.commit) {
       selectedCommitHash.value = review.commit
     }
-  } catch (e) {
-    if (guardAuth(e)) return
+  } catch (err) {
+    if (guardAuth(err)) return
   }
   try {
     const cfg = await getConfig()
+    if (stale(e)) return
     workDir.value = cfg.workDir || workDir.value
     if (cfg.reviewID) {
       reviewLabel.value = `Review ID: ${cfg.reviewID.substring(0, 8)}`
     } else if (cfg.reviewFile) {
       reviewLabel.value = cfg.reviewFile === 'review.json' ? 'Review: default' : `Review: ${cfg.reviewFile}`
     }
-  } catch (e) {
-    if (guardAuth(e)) return
+  } catch (err) {
+    if (guardAuth(err)) return
     reviewLabel.value = ''
   }
-  await loadReviews()
+  await loadReviews(e)
 }
 
 async function onAuthenticated() {
+  // 401 可能发生在任意标签页，重新认证后统一回到 working 视图，避免状态错位
+  if (!saved.value && comments.value.length > 0) {
+    window.alert('服务认证已更新，未保存的评论已被重置，请重新确认后再提交')
+  }
+  resetting++
+  epoch++
+  activeTab.value = 'working'
+  comments.value = []
+  saved.value = true
   authed.value = true
-  await initialize()
+  try {
+    await initialize()
+  } finally {
+    resetting--
+    if (resetting === 0 && activeTab.value !== 'working') {
+      await loadTab(activeTab.value)
+    }
+  }
 }
 
 onMounted(async () => {

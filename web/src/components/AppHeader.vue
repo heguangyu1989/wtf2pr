@@ -46,8 +46,18 @@
           <option value="xml">XML</option>
           <option value="template">Template</option>
         </select>
-        <button class="px-3 py-1.5 border dark:border-gray-700 text-sm rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition" @click="$emit('doExport')">导出</button>
-        <button class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition shadow-sm" @click="$emit('saveReview')">保存 Review</button>
+        <button
+          class="px-3 py-1.5 border dark:border-gray-700 text-sm rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="!canExport"
+          :title="canExport ? '' : '仅在 Working tree / Commit 页可导出'"
+          @click="$emit('doExport')"
+        >导出</button>
+        <button
+          class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="!canSave"
+          :title="canSave ? '' : '仅在 Commit 页可保存 Review'"
+          @click="$emit('saveReview')"
+        >保存 Review</button>
       </div>
     </div>
   </header>
@@ -61,6 +71,7 @@ const props = defineProps({
   exportFormat: { type: String, default: 'markdown' },
   reviewLabel: { type: String, default: '' },
   workDir: { type: String, default: '' },
+  activeTab: { type: String, default: 'working' },
 })
 defineEmits(['saveReview', 'doExport', 'newReview', 'showHelp', 'update:exportFormat', 'switchWorkdir'])
 
@@ -69,4 +80,7 @@ const workDirName = computed(() => {
   const parts = props.workDir.replace(/\/+$/, '').split('/')
   return parts[parts.length - 1] || props.workDir
 })
+
+const canExport = computed(() => props.activeTab === 'working' || props.activeTab === 'commit')
+const canSave = computed(() => props.activeTab === 'commit')
 </script>

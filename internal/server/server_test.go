@@ -8,14 +8,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/wtf2pr/wtf2pr/internal/config"
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
 
 func initTestRepo(t *testing.T) string {
 	dir := t.TempDir()
+	// macOS 上 $TMPDIR 是 /var 符号链接，统一归一化，保证与服务端路径口径一致
+	if normalized, err := config.NormalizePath(dir); err == nil {
+		dir = normalized
+	}
 	commands := [][]string{
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
@@ -750,11 +756,20 @@ func setupRestrictedServer(t *testing.T, allowedDirs []string) (*Server, string)
 		t.Fatalf("failed to write index.html: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
+	// macOS 上 /var 符号链接会导致前缀比较失败，允许列表需与服务端同口径归一化
+	normalized := make([]string, 0, len(allowedDirs))
+	for _, d := range allowedDirs {
+		nd, err := config.NormalizePath(d)
+		if err != nil {
+			t.Fatalf("invalid allowed dir %s: %v", d, err)
+		}
+		normalized = append(normalized, nd)
+	}
 	srv := NewServer(Options{
 		WorkDir:     dir,
 		StaticFS:    os.DirFS(staticDir),
 		DataRoot:    t.TempDir(),
-		AllowedDirs: allowedDirs,
+		AllowedDirs: normalized,
 	})
 	return srv, dir
 }
@@ -854,5 +869,251 @@ func TestRestrictedWorkdirInfo(t *testing.T) {
 	dirs := data["allowedDirs"].([]interface{})
 	if len(dirs) != 1 || dirs[0] != allowed {
 		t.Errorf("expected allowedDirs [%s], got %v", allowed, dirs)
+	}
+}
+
+func TestReviewIDTraversalRejected(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	evilIDs := []string{"../../../tmp/evil", "..%2F..%2Ftmp%2Fevil", "a/b", "../review_x"}
+
+	for _, id := range evilIDs {
+		// detail
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/api/review/detail?id="+id, nil)
+		srv.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("detail: traversal id %q expected 400, got %d", id, w.Code)
+		}
+
+		// switch
+		body, _ := json.Marshal(models.SwitchReviewRequest{ReviewID: id})
+		w2 := httptest.NewRecorder()
+		req2, _ := http.NewRequest("POST", "/api/review/switch", bytes.NewReader(body))
+		req2.Header.Set("Content-Type", "application/json")
+		srv.engine.ServeHTTP(w2, req2)
+		if w2.Code != http.StatusBadRequest {
+			t.Errorf("switch: traversal id %q expected 400, got %d", id, w2.Code)
+		}
+
+		// export
+		body3, _ := json.Marshal(models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking, ReviewID: id})
+		w3 := httptest.NewRecorder()
+		req3, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body3))
+		req3.Header.Set("Content-Type", "application/json")
+		srv.engine.ServeHTTP(w3, req3)
+		if w3.Code != http.StatusBadRequest {
+			t.Errorf("export: traversal id %q expected 400, got %d", id, w3.Code)
+		}
+	}
+}
+
+func TestSymlinkEscapeRejected(t *testing.T) {
+	allowed := t.TempDir()
+	outside := initTestRepo(t) // 允许目录之外的 git 仓库
+	link := filepath.Join(allowed, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	srv, _ := setupRestrictedServer(t, []string{allowed})
+
+	// 浏览允许目录内指向外部的符号链接应被拒绝
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+link, nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for symlink escape browse, got %d", w.Code)
+	}
+
+	// 切换到该符号链接路径同样应被拒绝
+	body, _ := json.Marshal(models.SwitchWorkdirRequest{Path: link})
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for symlink escape switch, got %d", w2.Code)
+	}
+}
+
+func TestXAuthTokenHeader(t *testing.T) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
+	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), Token: "tok", DataRoot: t.TempDir()})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/auth/check", nil)
+	req.Header.Set("X-Auth-Token", "tok")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with X-Auth-Token, got %d", w.Code)
+	}
+}
+
+func TestWorkspaceIDStable(t *testing.T) {
+	dir := initTestRepo(t)
+	absID := workspaceID(dir)
+
+	// 相对路径与绝对路径应产生相同 ID
+	cwd, _ := os.Getwd()
+	rel, err := filepath.Rel(cwd, dir)
+	if err == nil && !filepath.IsAbs(rel) {
+		if relID := workspaceID(rel); relID != absID {
+			t.Errorf("relative path ID %s != absolute ID %s", relID, absID)
+		}
+	}
+
+	// 符号链接路径应产生相同 ID
+	link := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(dir, link); err == nil {
+		if linkID := workspaceID(link); linkID != absID {
+			t.Errorf("symlink path ID %s != real ID %s", linkID, absID)
+		}
+	}
+}
+
+func TestMigrationSkipsNonToolFiles(t *testing.T) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
+	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
+	dataRoot := t.TempDir()
+	// 不带下划线前缀的文件（reviewbackup.json）不属于本工具的 review 文件命名，不应被迁移
+	notesPath := filepath.Join(dataRoot, "reviewbackup.json")
+	if err := os.WriteFile(notesPath, []byte(`{"keep":true}`), 0644); err != nil {
+		t.Fatalf("failed to write notes file: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), DataRoot: dataRoot})
+
+	if _, err := os.Stat(notesPath); err != nil {
+		t.Errorf("non-tool file reviewbackup.json should stay in place: %v", err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dataRoot, "workspaces", "*", "reviewbackup.json"))
+	if len(matches) > 0 {
+		t.Errorf("non-tool file should not be migrated")
+	}
+}
+
+func TestBrowseDotDotAndTrailingSlash(t *testing.T) {
+	parent := t.TempDir()
+	allowed := filepath.Join(parent, "allowed")
+	_ = os.MkdirAll(filepath.Join(allowed, "sub"), 0755)
+	srv, _ := setupRestrictedServer(t, []string{allowed})
+
+	// 尾部斜杠与内部 .. 最终仍在允许范围内 → 放行
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+allowed+"/sub/../", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for normalized in-scope path, got %d", w.Code)
+	}
+
+	// .. 越出允许范围 → 拒绝
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/fs/browse?path="+allowed+"/sub/../../", nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for dot-dot escape, got %d", w2.Code)
+	}
+}
+
+func TestConcurrentSwitchAndSave(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	other := initTestRepo(t)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "x"}}, Type: models.DiffTypeWorking})
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			srv.engine.ServeHTTP(w, req)
+		}
+	}()
+	for i := 0; i < 10; i++ {
+		target := other
+		if i%2 == 0 {
+			target = srv.getWorkDir()
+		}
+		body, _ := json.Marshal(models.SwitchWorkdirRequest{Path: target})
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		srv.engine.ServeHTTP(w, req)
+	}
+	<-done
+
+	// 不变量：当前 review 文件必须始终位于当前存储目录内（否则说明切换与保存发生了交错）
+	reviewFile := srv.getReviewFile()
+	storageDir := srv.getStorageDir()
+	if !strings.HasPrefix(reviewFile, storageDir+string(os.PathSeparator)) {
+		t.Errorf("review file %s escaped storage dir %s", reviewFile, storageDir)
+	}
+}
+
+func TestHandleExportMissingReviewID(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 显式指定但不存在的 review 应返回 404，而不是静默导出当前 review
+	body, _ := json.Marshal(models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking, ReviewID: "550e8400-e29b-41d4-a716-446655440000"})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing review, got %d", w.Code)
+	}
+}
+
+func TestConcurrentSwitchReviewAndSave(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 先创建一个有内容的 review 供切换
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest("POST", "/api/review/new", nil)
+	srv.engine.ServeHTTP(w1, req1)
+	var resp1 models.APIResponse
+	if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	id1 := resp1.Data.(map[string]interface{})["reviewID"].(string)
+	body, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "seed"}}, Type: models.DiffTypeWorking})
+	ws := httptest.NewRecorder()
+	reqs, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	reqs.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(ws, reqs)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			b, _ := json.Marshal(models.SaveReviewRequest{Comments: []models.Comment{{ID: "x", Content: "concurrent"}}, Type: models.DiffTypeWorking})
+			w := httptest.NewRecorder()
+			r, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(b))
+			r.Header.Set("Content-Type", "application/json")
+			srv.engine.ServeHTTP(w, r)
+		}
+	}()
+	for i := 0; i < 10; i++ {
+		sb, _ := json.Marshal(models.SwitchReviewRequest{ReviewID: id1})
+		w := httptest.NewRecorder()
+		r, _ := http.NewRequest("POST", "/api/review/switch", bytes.NewReader(sb))
+		r.Header.Set("Content-Type", "application/json")
+		srv.engine.ServeHTTP(w, r)
+		// 再新建 review 增加交错面
+		w2 := httptest.NewRecorder()
+		r2, _ := http.NewRequest("POST", "/api/review/new", nil)
+		srv.engine.ServeHTTP(w2, r2)
+	}
+	<-done
+
+	// 不变量：当前 review 文件必须始终位于当前存储目录内
+	reviewFile := srv.getReviewFile()
+	storageDir := srv.getStorageDir()
+	if !strings.HasPrefix(reviewFile, storageDir+string(os.PathSeparator)) {
+		t.Errorf("review file %s escaped storage dir %s", reviewFile, storageDir)
 	}
 }

@@ -36,7 +36,7 @@
         </form>
       </div>
       <p class="text-center text-xs text-gray-400 dark:text-gray-500 mt-4">
-        令牌可在服务启动日志中找到，也可通过启动参数 --token 指定
+        令牌可在服务启动日志中找到，也可在配置文件中指定固定值
       </p>
     </div>
   </div>

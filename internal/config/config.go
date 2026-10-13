@@ -11,6 +11,14 @@ import (
 
 // Config 启动配置文件（YAML）
 type Config struct {
+	// Port 服务监听端口，0 表示使用默认值
+	Port int `yaml:"port"`
+	// Host 服务监听地址
+	Host string `yaml:"host"`
+	// WorkDir Git 工作目录
+	WorkDir string `yaml:"workdir"`
+	// Token Web 访问令牌，为空时每次启动随机生成
+	Token string `yaml:"token"`
 	// AllowedDirs 允许访问的目录列表；为空表示不限制
 	AllowedDirs []string `yaml:"allowed_dirs"`
 }
@@ -38,7 +46,7 @@ func (c *Config) ResolvedAllowedDirs() ([]string, error) {
 	}
 	var out []string
 	for _, dir := range c.AllowedDirs {
-		resolved, err := normalizePath(dir)
+		resolved, err := NormalizePath(dir)
 		if err != nil {
 			return nil, fmt.Errorf("invalid allowed_dir %q: %w", dir, err)
 		}
@@ -47,8 +55,8 @@ func (c *Config) ResolvedAllowedDirs() ([]string, error) {
 	return out, nil
 }
 
-// normalizePath 展开 ~ 并转为绝对路径；目标存在时解析符号链接
-func normalizePath(path string) (string, error) {
+// NormalizePath 展开 ~ 并转为绝对路径；目标存在时解析符号链接
+func NormalizePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("empty path")
@@ -76,7 +84,7 @@ func IsAllowed(allowedDirs []string, path string) bool {
 	if len(allowedDirs) == 0 {
 		return true
 	}
-	normalized, err := normalizePath(path)
+	normalized, err := NormalizePath(path)
 	if err != nil {
 		return false
 	}

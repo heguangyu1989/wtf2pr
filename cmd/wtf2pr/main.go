@@ -16,13 +16,14 @@ import (
 //go:embed all:dist
 var staticFS embed.FS
 
+const (
+	defaultPort = 8322
+	defaultHost = "127.0.0.1"
+)
+
 func main() {
 	var port int
-	var host string
 	var workDir string
-	var reviewFile string
-	var reviewID string
-	var token string
 	var configFile string
 
 	rootCmd := &cobra.Command{
@@ -34,21 +35,40 @@ func main() {
 		Use:   "web",
 		Short: "Start the web server for diff review",
 		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := loadConfig(configFile, cmd.Flags().Changed("config"))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+				os.Exit(1)
+			}
+
+			// 配置优先级：CLI 显式指定 > 配置文件 > 默认值
+			if !cmd.Flags().Changed("port") && cfg.Port != 0 {
+				port = cfg.Port
+			}
+			host := defaultHost
+			if cfg.Host != "" {
+				host = cfg.Host
+			}
+			if !cmd.Flags().Changed("workdir") && cfg.WorkDir != "" {
+				workDir = cfg.WorkDir
+			}
 			if workDir == "" {
-				var err error
 				workDir, err = os.Getwd()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to get current dir: %v\n", err)
 					os.Exit(1)
 				}
+			} else {
+				// 与 allowed_dirs 行为一致：展开 ~、绝对化并解析符号链接
+				workDir, err = config.NormalizePath(workDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "invalid workdir: %v\n", err)
+					os.Exit(1)
+				}
 			}
 
-			if reviewFile != "" {
-				_ = os.MkdirAll(filepath.Dir(reviewFile), 0755)
-			}
-
+			token := cfg.Token
 			if token == "" {
-				var err error
 				token, err = generateToken()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to generate token: %v\n", err)
@@ -56,9 +76,13 @@ func main() {
 				}
 			}
 
-			allowedDirs, err := loadAllowedDirs(configFile, cmd.Flags().Changed("config"))
+			allowedDirs, err := cfg.ResolvedAllowedDirs()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+				os.Exit(1)
+			}
+			if port < 1 || port > 65535 {
+				fmt.Fprintf(os.Stderr, "invalid port %d: must be between 1 and 65535\n", port)
 				os.Exit(1)
 			}
 			if len(allowedDirs) > 0 && !config.IsAllowed(allowedDirs, workDir) {
@@ -68,8 +92,6 @@ func main() {
 			srv := server.NewServer(server.Options{
 				WorkDir:     workDir,
 				StaticFS:    staticFS,
-				ReviewFile:  reviewFile,
-				ReviewID:    reviewID,
 				Token:       token,
 				AllowedDirs: allowedDirs,
 			})
@@ -89,13 +111,9 @@ func main() {
 		},
 	}
 
-	webCmd.Flags().IntVar(&port, "port", 8322, "Server port")
-	webCmd.Flags().StringVar(&host, "host", "0.0.0.0", "Server host")
-	webCmd.Flags().StringVar(&workDir, "workdir", "", "Working directory (git repo)")
-	webCmd.Flags().StringVar(&reviewFile, "review-file", "", "Review storage JSON file path")
-	webCmd.Flags().StringVar(&reviewID, "review-id", "", "Review ID for default file naming")
-	webCmd.Flags().StringVar(&token, "token", "", "Access token for web UI (default: randomly generated on startup)")
-	webCmd.Flags().StringVar(&configFile, "config", defaultConfigPath(), "YAML config file path (restrict accessible paths etc.)")
+	webCmd.Flags().IntVar(&port, "port", defaultPort, "Server port (overrides config file)")
+	webCmd.Flags().StringVar(&workDir, "workdir", "", "Working directory / git repo (overrides config file)")
+	webCmd.Flags().StringVar(&configFile, "config", defaultConfigPath(), "YAML config file path")
 
 	rootCmd.AddCommand(webCmd)
 	if err := rootCmd.Execute(); err != nil {
@@ -113,8 +131,8 @@ func defaultConfigPath() string {
 	return filepath.Join(home, ".wtf2pr", "config.yaml")
 }
 
-// loadAllowedDirs 加载配置文件中的允许目录列表；显式指定 --config 但文件不存在时返回错误
-func loadAllowedDirs(configFile string, explicit bool) ([]string, error) {
+// loadConfig 加载 YAML 配置文件；显式指定 --config 但文件不存在时返回错误
+func loadConfig(configFile string, explicit bool) (*config.Config, error) {
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return nil, err
@@ -123,9 +141,13 @@ func loadAllowedDirs(configFile string, explicit bool) ([]string, error) {
 		if explicit {
 			return nil, fmt.Errorf("config file not found: %s", configFile)
 		}
-		return nil, nil
+		return &config.Config{}, nil
 	}
-	return cfg.ResolvedAllowedDirs()
+	// 配置文件可能包含明文 token，权限过宽时提醒
+	if info, statErr := os.Stat(configFile); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(os.Stderr, "warning: config file %s is accessible by others, recommend chmod 600\n", configFile)
+	}
+	return cfg, nil
 }
 
 // generateToken 生成随机访问令牌

@@ -195,10 +195,11 @@ type DirEntry struct {
 
 // BrowseResponse 目录浏览响应
 type BrowseResponse struct {
-	Path   string     `json:"path"`
-	Parent string     `json:"parent"`
-	IsGit  bool       `json:"isGit"`
-	Dirs   []DirEntry `json:"dirs"`
+	Path      string     `json:"path"`
+	Parent    string     `json:"parent"`
+	IsGit     bool       `json:"isGit"`
+	Truncated bool       `json:"truncated"`
+	Dirs      []DirEntry `json:"dirs"`
 }
 
 // APIResponse 通用 API 响应包装

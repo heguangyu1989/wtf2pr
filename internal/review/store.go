@@ -58,7 +58,7 @@ func (s *Store) Save(persisted *models.PersistedReview) {
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err == nil {
-		_ = os.WriteFile(s.filePath, data, 0644)
+		_ = os.WriteFile(s.filePath, data, 0600)
 	}
 }
 

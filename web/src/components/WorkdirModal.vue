@@ -63,7 +63,8 @@
               ← 上级
             </button>
             <div class="flex-1 px-2.5 py-1.5 text-xs font-mono bg-gray-50 dark:bg-gray-800 rounded-md truncate" :title="currentPath">
-              {{ currentPath }}
+              <span v-if="currentPath">{{ currentPath }}</span>
+              <span v-else class="text-gray-400 font-sans">请从上方"允许访问的目录"中选择一个路径</span>
             </div>
             <span v-if="isGit" class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 shrink-0">git</span>
           </div>
@@ -76,7 +77,6 @@
               v-for="d in dirs"
               :key="d.path"
               class="px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/10 flex items-center gap-2 transition"
-              @dblclick="browse(d.path)"
               @click="browse(d.path)"
             >
               <svg class="w-4 h-4 text-amber-500 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
@@ -86,6 +86,7 @@
               <span v-if="d.isGit" class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 shrink-0">git</span>
             </li>
           </ul>
+          <div v-if="truncated" class="text-[11px] text-amber-600 dark:text-amber-400 mt-1 shrink-0">目录过多，仅显示前 500 条</div>
         </div>
       </div>
 
@@ -113,7 +114,10 @@
 import { ref, onMounted } from 'vue'
 import { getWorkdir, switchWorkdir, browseDirs } from '../api/client.js'
 
-const emit = defineEmits(['close', 'switched'])
+const props = defineProps({
+  hasUnsaved: { type: Boolean, default: false },
+})
+const emit = defineEmits(['close', 'switched', 'unauthorized'])
 
 const workspaces = ref([])
 const allowedDirs = ref([])
@@ -123,6 +127,7 @@ const currentPath = ref('')
 const parent = ref('')
 const isGit = ref(false)
 const dirs = ref([])
+const truncated = ref(false)
 const loading = ref(false)
 const browseError = ref('')
 const switching = ref(false)
@@ -135,27 +140,44 @@ function shortPath(p) {
   return home + '…/' + parts.slice(-2).join('/')
 }
 
+// 浏览并发序号：仅最新一次浏览的结果生效，避免快速点击时后到响应覆盖
+let browseSeq = 0
+let unauth = false
+
 async function browse(path) {
+  const seq = ++browseSeq
   loading.value = true
   browseError.value = ''
   try {
     const res = await browseDirs(path || '')
+    if (seq !== browseSeq) return false
     currentPath.value = res.path
     parent.value = res.parent || ''
     isGit.value = !!res.isGit
     dirs.value = res.dirs || []
+    truncated.value = !!res.truncated
     return true
   } catch (e) {
+    if (e && e.status === 401) {
+      unauth = true
+      emit('unauthorized')
+      return false
+    }
+    if (seq !== browseSeq) return false
     browseError.value = e.message
     dirs.value = []
     return false
   } finally {
-    loading.value = false
+    if (seq === browseSeq) loading.value = false
   }
 }
 
 async function onSelect(path) {
   if (switching.value) return
+  // 确认必须在发起切换之前，否则取消会造成前后端状态分裂
+  if (props.hasUnsaved && !window.confirm('当前有未保存的评论，切换工作目录后将被丢弃，确认切换？')) {
+    return
+  }
   switching.value = true
   switchError.value = ''
   try {
@@ -163,6 +185,10 @@ async function onSelect(path) {
     emit('switched', info)
     emit('close')
   } catch (e) {
+    if (e && e.status === 401) {
+      emit('unauthorized')
+      return
+    }
     switchError.value = e.message
   } finally {
     switching.value = false
@@ -177,11 +203,15 @@ onMounted(async () => {
     restricted.value = !!info.restricted
     currentWorkdir.value = info.workDir || ''
     const ok = await browse(info.workDir || '')
-    if (!ok) {
+    if (!ok && !unauth) {
       // 当前目录不在允许范围内时，回退到允许目录列表
       await browse('')
     }
-  } catch {
+  } catch (e) {
+    if ((e && e.status === 401) || unauth) {
+      emit('unauthorized')
+      return
+    }
     await browse('')
   }
 })

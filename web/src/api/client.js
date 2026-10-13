@@ -13,10 +13,6 @@ export function setToken(token) {
   }
 }
 
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
 // 启动时支持从 URL ?token=xxx 读取并持久化（服务端启动日志会输出带 token 的链接）
 (function initTokenFromURL() {
   try {

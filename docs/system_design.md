@@ -15,10 +15,10 @@
 
 1. 后端通过 `github.com/spf13/cobra` 提供命令行入口。
 2. 后端通过 Go 官方 `embed` 将前端页面打包到一个可执行二进制文件。
-3. 通过 `wtf2pr web --port={port} --host={host} --workdir={工作目录} [--token={访问令牌}]` 指令启动服务。
+3. 通过 `wtf2pr web [--config={配置文件}] [--port={端口}] [--workdir={工作目录}]` 指令启动服务；服务配置集中在 YAML 配置文件（默认 `~/.wtf2pr/config.yaml`），支持 `port` / `host` / `workdir` / `token` / `allowed_dirs`，优先级为 CLI 显式指定 > 配置文件 > 默认值。
 4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录，旧版扁平存储数据首次启动时自动迁移。
-5. 服务启动时生成随机访问令牌（可用 `--token` 指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer` 或 `?token=`）。
-6. 支持 YAML 启动配置文件（默认 `~/.wtf2pr/config.yaml`，可用 `--config` 指定），通过 `allowed_dirs` 限制 Web 端可访问的文件路径范围；切换工作目录与目录浏览越界时返回 403。
+5. 访问令牌为空时每次启动随机生成（可在配置文件中指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer` 或 `?token=`）。
+6. 配置文件 `allowed_dirs` 限制 Web 端可访问的文件路径范围；切换工作目录与目录浏览越界时返回 403。
 
 ## 系统架构
 
@@ -35,6 +35,9 @@
 
 ### 2. 后端
 
+- **Config 模块**：
+  - 加载 YAML 启动配置（`port` / `host` / `workdir` / `token` / `allowed_dirs`），文件缺失时全部使用默认值。
+  - 路径规范化（`~` 展开、绝对化、符号链接解析）与目录边界匹配，为 `allowed_dirs` 访问控制提供判定。
 - **Git 模块**：
   - 执行 `git diff HEAD` 获取已跟踪文件的未提交变更。
   - 执行 `git ls-files --others --exclude-standard` 补充未跟踪（untracked）文件。
@@ -51,14 +54,16 @@
   - 输出包含：Commit 元信息、被评论文件路径、评论内容、对应代码行、Hunk Header。
   - 支持 Markdown、JSON、XML 三种格式。
 - **Server 模块**：
-  - 提供 RESTful API（`/api/diff`、`/api/commits`、`/api/reviews`、`/api/review`、`/api/review/new`、`/api/review/switch`、`/api/export`、`/api/config`）。
+  - 提供 RESTful API（`/api/auth/check`、`/api/diff`、`/api/commits`、`/api/config`、`/api/review`、`/api/review/detail`、`/api/reviews`、`/api/review/new`、`/api/review/switch`、`/api/export`、`/api/template`、`/api/workdir`、`/api/fs/browse`）。
+  - 所有 API 经 token 鉴权中间件（常量时间比较）；review ID 经白名单校验，防止路径遍历越出存储目录。
+  - 切换 workdir/review 与保存互斥（统一 `s.mu → store.mu` 锁序），避免并发交错。
   - 静态文件服务通过 `NoRoute` 兜底，将未匹配路由指向 embed 的前端资源。
 
 ### 3. 构建与开发
 
 - `make dev-web`：以开发模式运行前端（Vite dev server + Proxy）。
-- `make dev-server`：以开发模式运行后端（不重新构建前端）。
-- `make build`：构建 macOS 最终交付物（交叉编译 `amd64` + `arm64`，打包为 `tar.gz`）。
+- `make dev-server`：以开发模式运行后端（不重新构建前端，可用 `WTF2PR_CONFIG` 指定配置文件）。
+- `make build`：构建 macOS / Linux 最终交付物（交叉编译 `amd64` + `arm64`，打包为 `tar.gz`）。
 - `make lint`：同时执行后端 `golangci-lint / go vet / gofmt` 与前端 `eslint` 检查。
 - `make clean`：清理构建产物。
 
