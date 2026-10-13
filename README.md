@@ -16,6 +16,7 @@
 - **工作目录切换**：启动后可在页面上随时切换工作目录（支持目录浏览与最近使用列表），无需重启服务。
 - **按目录隔离存储**：每个工作目录的 Review 数据独立存储在 `~/.wtf2pr/workspaces/<目录哈希>/` 下，互不干扰；旧版扁平存储的数据会在首次启动时自动迁移。
 - **访问令牌鉴权**：服务启动时自动生成随机 Token（也可用 `--token` 指定），Web 端所有 API 均需携带令牌访问。
+- **路径访问限制**：支持 YAML 配置文件（`allowed_dirs`）限制 Web 端可访问的目录范围，防止越权切换或浏览服务器文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见。
 - **结构化导出**：支持导出为 **Markdown**、**JSON**、**XML**，仅包含被评论的文件与关键代码行，避免冗余 Token 消耗。
 - **Review 持久化**：Review 数据自动保存到本地 JSON 文件，关闭服务后仍可恢复。
@@ -58,6 +59,9 @@ go build -o wtf2pr ./cmd/wtf2pr
 
 # 手动指定访问令牌（默认每次启动随机生成）
 ./wtf2pr web --token=my-fixed-token
+
+# 指定 YAML 配置文件（默认：~/.wtf2pr/config.yaml，不存在则不启用限制）
+./wtf2pr web --config=/path/to/config.yaml
 
 # 指定 Review 存储文件（指定后不启用按工作目录隔离存储）
 ./wtf2pr web --review-file=/path/to/review.json
@@ -104,8 +108,18 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 | `--host` | `0.0.0.0` | 服务监听地址（设为 `127.0.0.1` 仅本地访问） |
 | `--workdir` | 当前目录 | Git 工作目录（启动后可在页面切换） |
 | `--token` | `""` | Web 访问令牌，为空时每次启动随机生成 |
+| `--config` | `~/.wtf2pr/config.yaml` | YAML 配置文件路径；显式指定但文件不存在时启动失败 |
 | `--review-file` | `""` | Review 数据存储的 JSON 文件完整路径（兼容旧模式） |
 | `--review-id` | `""` | Review ID，用于命名当前工作目录数据区内的存储文件 |
+
+> 配置文件（YAML）支持的安全限制：
+> ```yaml
+> # 允许访问的目录列表（支持 ~，留空则不限制）
+> allowed_dirs:
+>   - ~/code
+>   - /mnt/data/github
+> ```
+> 启用后，Web 端切换工作目录与目录浏览均被限制在上述目录之内（越界返回 403），页面会展示允许访问的目录列表。
 
 > 数据存储规则（未指定 `--review-file` 时）：
 > - 每个工作目录对应独立数据区：`~/.wtf2pr/workspaces/<目录哈希>/`

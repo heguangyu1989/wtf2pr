@@ -18,6 +18,7 @@
 3. 通过 `wtf2pr web --port={port} --host={host} --workdir={工作目录} [--token={访问令牌}]` 指令启动服务。
 4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录，旧版扁平存储数据首次启动时自动迁移。
 5. 服务启动时生成随机访问令牌（可用 `--token` 指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer` 或 `?token=`）。
+6. 支持 YAML 启动配置文件（默认 `~/.wtf2pr/config.yaml`，可用 `--config` 指定），通过 `allowed_dirs` 限制 Web 端可访问的文件路径范围；切换工作目录与目录浏览越界时返回 403。
 
 ## 系统架构
 

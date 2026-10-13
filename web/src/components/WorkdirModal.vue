@@ -10,6 +10,27 @@
       </div>
 
       <div class="flex-1 overflow-hidden flex flex-col min-h-0">
+        <!-- 允许访问的目录（启用路径限制时展示） -->
+        <div v-if="restricted" class="px-5 pt-4 shrink-0">
+          <div class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">允许访问的目录</div>
+          <div class="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+            <button
+              v-for="dir in allowedDirs"
+              :key="dir"
+              class="px-2.5 py-1.5 text-xs rounded-lg border transition font-mono truncate max-w-full"
+              :class="dir === currentWorkdir
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 cursor-default'
+                : 'border-gray-200 dark:border-gray-700 hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10'"
+              :disabled="dir === currentWorkdir"
+              :title="dir"
+              @click="onSelect(dir)"
+            >
+              {{ dir }}<span v-if="dir === currentWorkdir" class="ml-1 font-sans">(当前)</span>
+            </button>
+          </div>
+          <p class="text-[11px] text-gray-400 mt-1.5">管理员已通过配置文件限制可访问的路径范围，仅允许切换到上述目录之内</p>
+        </div>
+
         <!-- 最近使用的工作目录 -->
         <div v-if="workspaces.length" class="px-5 pt-4 shrink-0">
           <div class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">最近使用</div>
@@ -95,6 +116,8 @@ import { getWorkdir, switchWorkdir, browseDirs } from '../api/client.js'
 const emit = defineEmits(['close', 'switched'])
 
 const workspaces = ref([])
+const allowedDirs = ref([])
+const restricted = ref(false)
 const currentWorkdir = ref('')
 const currentPath = ref('')
 const parent = ref('')
@@ -121,9 +144,11 @@ async function browse(path) {
     parent.value = res.parent || ''
     isGit.value = !!res.isGit
     dirs.value = res.dirs || []
+    return true
   } catch (e) {
     browseError.value = e.message
     dirs.value = []
+    return false
   } finally {
     loading.value = false
   }
@@ -147,9 +172,15 @@ async function onSelect(path) {
 onMounted(async () => {
   try {
     const info = await getWorkdir()
-    workspaces.value = info.workspaces || []
+    workspaces.value = (info.workspaces || []).filter(ws => !info.restricted || (info.allowedDirs || []).some(dir => ws.path === dir || ws.path.startsWith(dir + '/')))
+    allowedDirs.value = info.allowedDirs || []
+    restricted.value = !!info.restricted
     currentWorkdir.value = info.workDir || ''
-    await browse(info.workDir || '')
+    const ok = await browse(info.workDir || '')
+    if (!ok) {
+      // 当前目录不在允许范围内时，回退到允许目录列表
+      await browse('')
+    }
   } catch {
     await browse('')
   }

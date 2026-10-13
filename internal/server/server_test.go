@@ -739,3 +739,120 @@ func TestLegacyDataMigration(t *testing.T) {
 		t.Errorf("expected legacy file to be moved into workspace dir")
 	}
 }
+
+func setupRestrictedServer(t *testing.T, allowedDirs []string) (*Server, string) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(staticDir, "dist"), 0755); err != nil {
+		t.Fatalf("failed to create dist dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatalf("failed to write index.html: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(Options{
+		WorkDir:     dir,
+		StaticFS:    os.DirFS(staticDir),
+		DataRoot:    t.TempDir(),
+		AllowedDirs: allowedDirs,
+	})
+	return srv, dir
+}
+
+func TestRestrictedSwitchWorkdir(t *testing.T) {
+	allowedRepo := initTestRepo(t)
+	srv, _ := setupRestrictedServer(t, []string{allowedRepo})
+
+	// 允许列表内的目录可以切换
+	body, _ := json.Marshal(models.SwitchWorkdirRequest{Path: allowedRepo})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for allowed dir, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	// 允许列表外的目录应被拒绝（即使是 git 仓库）
+	other := initTestRepo(t)
+	body2, _ := json.Marshal(models.SwitchWorkdirRequest{Path: other})
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/workdir", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed dir, got %d", w2.Code)
+	}
+}
+
+func TestRestrictedBrowse(t *testing.T) {
+	parent := t.TempDir()
+	allowed := filepath.Join(parent, "allowed")
+	_ = os.MkdirAll(allowed, 0755)
+	srv, _ := setupRestrictedServer(t, []string{allowed})
+
+	// 允许目录内可以浏览
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/fs/browse?path="+allowed, nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for allowed dir, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if parentVal, _ := data["parent"].(string); parentVal != "" {
+		t.Errorf("expected no parent outside allowed dirs, got %q", parentVal)
+	}
+
+	// 允许目录外浏览应被拒绝
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/fs/browse?path="+parent, nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed browse, got %d", w2.Code)
+	}
+
+	// 空路径在受限模式下返回允许目录列表
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/fs/browse", nil)
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200 for empty path browse, got %d", w3.Code)
+	}
+	var resp3 models.APIResponse
+	if err := json.Unmarshal(w3.Body.Bytes(), &resp3); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data3 := resp3.Data.(map[string]interface{})
+	dirs := data3["dirs"].([]interface{})
+	if len(dirs) != 1 || dirs[0].(map[string]interface{})["path"] != allowed {
+		t.Errorf("expected allowed dir list, got %v", dirs)
+	}
+}
+
+func TestRestrictedWorkdirInfo(t *testing.T) {
+	allowed := t.TempDir()
+	srv, _ := setupRestrictedServer(t, []string{allowed})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/workdir", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["restricted"] != true {
+		t.Errorf("expected restricted=true")
+	}
+	dirs := data["allowedDirs"].([]interface{})
+	if len(dirs) != 1 || dirs[0] != allowed {
+		t.Errorf("expected allowedDirs [%s], got %v", allowed, dirs)
+	}
+}

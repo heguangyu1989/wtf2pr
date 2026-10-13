@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/wtf2pr/wtf2pr/internal/config"
 	"github.com/wtf2pr/wtf2pr/internal/export"
 	"github.com/wtf2pr/wtf2pr/internal/git"
 	"github.com/wtf2pr/wtf2pr/internal/review"
@@ -25,21 +26,23 @@ import (
 
 // Options 创建 server 的参数
 type Options struct {
-	WorkDir    string
-	StaticFS   fs.FS
-	ReviewFile string // 显式指定 review 文件路径（兼容旧行为，指定后不使用 workspace 存储）
-	ReviewID   string
-	Token      string // 访问令牌，为空则不启用鉴权
-	DataRoot   string // 数据根目录，默认 ~/.wtf2pr
+	WorkDir     string
+	StaticFS    fs.FS
+	ReviewFile  string // 显式指定 review 文件路径（兼容旧行为，指定后不使用 workspace 存储）
+	ReviewID    string
+	Token       string   // 访问令牌，为空则不启用鉴权
+	DataRoot    string   // 数据根目录，默认 ~/.wtf2pr
+	AllowedDirs []string // 允许访问的目录列表（已规范化），为空表示不限制
 }
 
 // Server HTTP server
 type Server struct {
-	engine   *gin.Engine
-	store    *review.Store
-	staticFS fs.FS
-	token    string
-	dataRoot string
+	engine      *gin.Engine
+	store       *review.Store
+	staticFS    fs.FS
+	token       string
+	dataRoot    string
+	allowedDirs []string
 
 	mu         sync.RWMutex
 	workDir    string
@@ -62,11 +65,12 @@ func NewServer(opts Options) *Server {
 	}
 
 	s := &Server{
-		engine:   r,
-		staticFS: opts.StaticFS,
-		token:    opts.Token,
-		dataRoot: dataRoot,
-		workDir:  opts.WorkDir,
+		engine:      r,
+		staticFS:    opts.StaticFS,
+		token:       opts.Token,
+		dataRoot:    dataRoot,
+		allowedDirs: opts.AllowedDirs,
+		workDir:     opts.WorkDir,
 	}
 
 	if opts.ReviewFile != "" {
@@ -270,10 +274,19 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 
 func (s *Server) handleGetWorkdir(c *gin.Context) {
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.WorkdirInfo{
-		WorkDir:    s.getWorkDir(),
-		StorageDir: s.getStorageDir(),
-		Workspaces: s.listWorkspaces(),
+		WorkDir:     s.getWorkDir(),
+		StorageDir:  s.getStorageDir(),
+		Workspaces:  s.listWorkspaces(),
+		AllowedDirs: s.allowedDirsList(),
+		Restricted:  len(s.allowedDirs) > 0,
 	}})
+}
+
+// allowedDirsList 返回允许目录列表的副本（保证 JSON 序列化为 [] 而非 null）
+func (s *Server) allowedDirsList() []string {
+	dirs := make([]string, len(s.allowedDirs))
+	copy(dirs, s.allowedDirs)
+	return dirs
 }
 
 // listWorkspaces 扫描数据根目录下已知的 workspace
@@ -328,6 +341,10 @@ func (s *Server) handleSwitchWorkdir(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "directory not found: " + abs})
 		return
 	}
+	if !config.IsAllowed(s.allowedDirs, abs) {
+		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "path is outside the allowed directories: " + abs})
+		return
+	}
 	if !git.IsGitRepo(abs) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "not a git repository: " + abs})
 		return
@@ -348,14 +365,29 @@ func (s *Server) handleSwitchWorkdir(c *gin.Context) {
 	s.store.SwitchFile(reviewFile)
 
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.WorkdirInfo{
-		WorkDir:    s.getWorkDir(),
-		StorageDir: s.getStorageDir(),
-		Workspaces: s.listWorkspaces(),
+		WorkDir:     s.getWorkDir(),
+		StorageDir:  s.getStorageDir(),
+		Workspaces:  s.listWorkspaces(),
+		AllowedDirs: s.allowedDirsList(),
+		Restricted:  len(s.allowedDirs) > 0,
 	}})
 }
 
 func (s *Server) handleBrowse(c *gin.Context) {
 	path := strings.TrimSpace(c.Query("path"))
+	// 受限模式下未指定路径时，返回允许访问的目录列表
+	if path == "" && len(s.allowedDirs) > 0 {
+		resp := models.BrowseResponse{Path: "", Dirs: []models.DirEntry{}}
+		for _, dir := range s.allowedDirs {
+			item := models.DirEntry{Name: filepath.Base(dir), Path: dir}
+			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+				item.IsGit = true
+			}
+			resp.Dirs = append(resp.Dirs, item)
+		}
+		c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: resp})
+		return
+	}
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -370,6 +402,10 @@ func (s *Server) handleBrowse(c *gin.Context) {
 		return
 	}
 	abs = filepath.Clean(abs)
+	if !config.IsAllowed(s.allowedDirs, abs) {
+		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "path is outside the allowed directories: " + abs})
+		return
+	}
 	entries, err := os.ReadDir(abs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "cannot read directory: " + err.Error()})
@@ -380,7 +416,7 @@ func (s *Server) handleBrowse(c *gin.Context) {
 		Path: abs,
 		Dirs: []models.DirEntry{},
 	}
-	if parent := filepath.Dir(abs); parent != abs {
+	if parent := filepath.Dir(abs); parent != abs && config.IsAllowed(s.allowedDirs, parent) {
 		resp.Parent = parent
 	}
 	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {

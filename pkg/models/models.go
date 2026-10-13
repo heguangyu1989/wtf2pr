@@ -174,9 +174,11 @@ type WorkspaceItem struct {
 
 // WorkdirInfo 当前工作目录与已知工作区信息
 type WorkdirInfo struct {
-	WorkDir    string          `json:"workDir"`
-	StorageDir string          `json:"storageDir"`
-	Workspaces []WorkspaceItem `json:"workspaces"`
+	WorkDir     string          `json:"workDir"`
+	StorageDir  string          `json:"storageDir"`
+	Workspaces  []WorkspaceItem `json:"workspaces"`
+	AllowedDirs []string        `json:"allowedDirs"`
+	Restricted  bool            `json:"restricted"`
 }
 
 // SwitchWorkdirRequest 切换工作目录请求
