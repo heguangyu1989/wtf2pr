@@ -41,9 +41,6 @@ func Load(path string) (*Config, error) {
 
 // ResolvedAllowedDirs 返回规范化后的允许目录列表（展开 ~、转为绝对路径、解析符号链接）
 func (c *Config) ResolvedAllowedDirs() ([]string, error) {
-	if c == nil {
-		return nil, nil
-	}
 	var out []string
 	for _, dir := range c.AllowedDirs {
 		resolved, err := NormalizePath(dir)
@@ -72,7 +69,7 @@ func NormalizePath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	abs = filepath.Clean(abs)
+	// Abs 已保证路径 Clean；目标存在时进一步解析符号链接
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
 	}
@@ -89,6 +86,10 @@ func IsAllowed(allowedDirs []string, path string) bool {
 		return false
 	}
 	for _, dir := range allowedDirs {
+		if dir == string(os.PathSeparator) {
+			// 允许列表包含根目录时全部放行（根目录加分隔符前缀无法构成有效匹配）
+			return true
+		}
 		if normalized == dir || strings.HasPrefix(normalized, dir+string(os.PathSeparator)) {
 			return true
 		}

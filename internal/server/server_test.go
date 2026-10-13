@@ -67,7 +67,7 @@ func setupTestServer(t *testing.T) (*Server, string) {
 	srv := NewServer(Options{
 		WorkDir:  dir,
 		StaticFS: os.DirFS(staticDir),
-		DataRoot: t.TempDir(),
+		dataRoot: t.TempDir(),
 	})
 	return srv, dir
 }
@@ -413,12 +413,16 @@ func TestHandleGetReviewDetail(t *testing.T) {
 
 func TestHandleGetReviewsFiltersEmpty(t *testing.T) {
 	srv, _ := setupTestServer(t)
-	// Create a review but do NOT save comments
-	w1 := httptest.NewRecorder()
-	req1, _ := http.NewRequest("POST", "/api/review/new", nil)
-	srv.engine.ServeHTTP(w1, req1)
+	// 直接向存储目录写入一个零评论 review 文件和一个有评论 review 文件，真实验证过滤行为
+	emptyReview := `{"reviewID":"empty1","type":"working","comments":[]}`
+	if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_empty1.json"), []byte(emptyReview), 0600); err != nil {
+		t.Fatalf("failed to seed empty review: %v", err)
+	}
+	fullReview := `{"reviewID":"full1","type":"working","comments":[{"id":"1","filePath":"a.go","content":"x"}]}`
+	if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_full1.json"), []byte(fullReview), 0600); err != nil {
+		t.Fatalf("failed to seed full review: %v", err)
+	}
 
-	// list should not contain empty review
 	w2 := httptest.NewRecorder()
 	req2, _ := http.NewRequest("GET", "/api/reviews", nil)
 	srv.engine.ServeHTTP(w2, req2)
@@ -430,11 +434,18 @@ func TestHandleGetReviewsFiltersEmpty(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected array data, got %T", resp.Data)
 	}
+	foundFull := false
 	for _, item := range data {
 		m := item.(map[string]interface{})
-		if m["commentCount"].(float64) == 0 {
+		if m["reviewID"] == "empty1" {
 			t.Errorf("empty review should be filtered")
 		}
+		if m["reviewID"] == "full1" {
+			foundFull = true
+		}
+	}
+	if !foundFull {
+		t.Errorf("non-empty review full1 should be listed")
 	}
 }
 
@@ -517,7 +528,7 @@ func TestAuthMiddleware(t *testing.T) {
 		WorkDir:  dir,
 		StaticFS: os.DirFS(staticDir),
 		Token:    "secret-token",
-		DataRoot: t.TempDir(),
+		dataRoot: t.TempDir(),
 	})
 
 	// 无 token 应返回 401
@@ -576,9 +587,9 @@ func TestHandleSwitchWorkdir(t *testing.T) {
 	if data["workDir"] != other {
 		t.Errorf("expected workDir %s, got %v", other, data["workDir"])
 	}
-	storageDir, _ := data["storageDir"].(string)
-	if storageDir == "" || storageDir == dir {
-		t.Errorf("expected per-workdir storage dir, got %v", storageDir)
+	// 服务端存储目录应按工作目录隔离（响应体不再暴露该内部路径，直接断言服务端状态）
+	if sd := srv.getStorageDir(); sd == "" || sd == dir || !strings.Contains(sd, "workspaces") {
+		t.Errorf("expected per-workdir storage dir, got %v", sd)
 	}
 
 	// 新目录下的 review 数据应与旧目录隔离
@@ -726,7 +737,7 @@ func TestLegacyDataMigration(t *testing.T) {
 	srv := NewServer(Options{
 		WorkDir:  dir,
 		StaticFS: os.DirFS(staticDir),
-		DataRoot: dataRoot,
+		dataRoot: dataRoot,
 	})
 
 	// 旧数据应被迁移到 workspace 目录并自动加载
@@ -768,7 +779,7 @@ func setupRestrictedServer(t *testing.T, allowedDirs []string) (*Server, string)
 	srv := NewServer(Options{
 		WorkDir:     dir,
 		StaticFS:    os.DirFS(staticDir),
-		DataRoot:    t.TempDir(),
+		dataRoot:    t.TempDir(),
 		AllowedDirs: normalized,
 	})
 	return srv, dir
@@ -801,7 +812,10 @@ func TestRestrictedSwitchWorkdir(t *testing.T) {
 }
 
 func TestRestrictedBrowse(t *testing.T) {
-	parent := t.TempDir()
+	parent, err := config.NormalizePath(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to normalize: %v", err)
+	}
 	allowed := filepath.Join(parent, "allowed")
 	_ = os.MkdirAll(allowed, 0755)
 	srv, _ := setupRestrictedServer(t, []string{allowed})
@@ -849,7 +863,10 @@ func TestRestrictedBrowse(t *testing.T) {
 }
 
 func TestRestrictedWorkdirInfo(t *testing.T) {
-	allowed := t.TempDir()
+	allowed, err := config.NormalizePath(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to normalize: %v", err)
+	}
 	srv, _ := setupRestrictedServer(t, []string{allowed})
 
 	w := httptest.NewRecorder()
@@ -941,7 +958,7 @@ func TestXAuthTokenHeader(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
 	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
 	gin.SetMode(gin.TestMode)
-	srv := NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), Token: "tok", DataRoot: t.TempDir()})
+	srv := NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), Token: "tok", dataRoot: t.TempDir()})
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/api/auth/check", nil)
@@ -986,7 +1003,7 @@ func TestMigrationSkipsNonToolFiles(t *testing.T) {
 		t.Fatalf("failed to write notes file: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), DataRoot: dataRoot})
+	NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), dataRoot: dataRoot})
 
 	if _, err := os.Stat(notesPath); err != nil {
 		t.Errorf("non-tool file reviewbackup.json should stay in place: %v", err)
@@ -1115,5 +1132,54 @@ func TestConcurrentSwitchReviewAndSave(t *testing.T) {
 	storageDir := srv.getStorageDir()
 	if !strings.HasPrefix(reviewFile, storageDir+string(os.PathSeparator)) {
 		t.Errorf("review file %s escaped storage dir %s", reviewFile, storageDir)
+	}
+}
+
+func TestLegacyExportTemplateMigration(t *testing.T) {
+	dir := initTestRepo(t)
+	staticDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(staticDir, "dist"), 0755)
+	_ = os.WriteFile(filepath.Join(staticDir, "dist", "index.html"), []byte("<html></html>"), 0644)
+	dataRoot := t.TempDir()
+	// 旧版扁平存储的自定义导出模板应随数据一起迁移
+	if err := os.WriteFile(filepath.Join(dataRoot, "export.tpl"), []byte("# {{.Type}}"), 0644); err != nil {
+		t.Fatalf("failed to write legacy template: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(Options{WorkDir: dir, StaticFS: os.DirFS(staticDir), dataRoot: dataRoot})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/template", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	if got := resp.Data.(map[string]interface{})["content"]; got != "# {{.Type}}" {
+		t.Errorf("expected migrated template content, got %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "export.tpl")); !os.IsNotExist(err) {
+		t.Errorf("legacy export.tpl should be moved into workspace dir")
+	}
+}
+
+func TestHandleGetCommitsPageSizeCap(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/commits?page=1&page_size=10000000", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["pageSize"].(float64) != 100 {
+		t.Errorf("expected pageSize capped to 100, got %v", data["pageSize"])
 	}
 }

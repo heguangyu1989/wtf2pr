@@ -316,9 +316,24 @@ watch(activeTab, async (tab) => {
   await loadTab(tab)
 })
 
-watch(selectedCommitHash, async (hash) => {
+// 消费式跳过标记：程序性回写 hash 时置位，watcher 触发时消费一次（同步 resetting 窗口抑制不了异步 watcher）
+let skipHashWatch = false
+
+watch(selectedCommitHash, async (hash, oldHash) => {
+  if (skipHashWatch) {
+    skipHashWatch = false
+    return
+  }
   if (resetting > 0) return
   if (activeTab.value !== 'commit') return
+  // 任何 commit 上下文变化（含清空为占位项）都先确认丢弃未保存评论
+  if (!confirmDiscardIfDirty()) {
+    skipHashWatch = true
+    selectedCommitHash.value = oldHash
+    return
+  }
+  comments.value = []
+  saved.value = true
   if (!hash) {
     cancelDiff()
     return
@@ -344,7 +359,18 @@ async function loadTab(tab) {
     try {
       const review = await getReview()
       if (stale(e)) return
-      comments.value = review.comments || []
+      if (!selectedCommitHash.value && review.type === 'commit' && review.commit) {
+        // 未选择 commit 时从当前 review 恢复上下文（初始化竞态下也能在此补齐）
+        skipHashWatch = true
+        selectedCommitHash.value = review.commit
+        comments.value = review.comments || []
+        await loadDiff('commit', review.commit)
+      } else if (review.type === 'commit' && review.commit && review.commit !== selectedCommitHash.value) {
+        // 服务端评论归属于其他 commit，不展示，避免错位保存
+        comments.value = []
+      } else {
+        comments.value = review.comments || []
+      }
     } catch (err) {
       if (guardAuth(err)) return
       if (stale(e)) return
@@ -453,25 +479,18 @@ async function saveReview() {
 
 async function doExport() {
   // 仅在 working / commit 标签页可用，避免弹出陈旧内容
-  if (activeTab.value === 'working') {
-    exportResult.value = await exportReview(exportFormat.value, 'working', '').catch((e) => {
-      if (!guardAuth(e)) alert('导出失败: ' + e.message)
-      return null
-    })
-  } else if (activeTab.value === 'commit') {
-    if (!selectedCommitHash.value) {
-      alert('请先选择一个 Commit')
-      return
-    }
-    exportResult.value = await exportReview(exportFormat.value, 'commit', selectedCommitHash.value).catch((e) => {
-      if (!guardAuth(e)) alert('导出失败: ' + e.message)
-      return null
-    })
-  } else {
+  if (activeTab.value !== 'working' && activeTab.value !== 'commit') return
+  if (activeTab.value === 'commit' && !selectedCommitHash.value) {
+    alert('请先选择一个 Commit')
     return
   }
-  if (exportResult.value) {
+  const commit = activeTab.value === 'commit' ? selectedCommitHash.value : ''
+  try {
+    exportResult.value = await exportReview(exportFormat.value, activeTab.value, commit)
     showExport.value = true
+  } catch (e) {
+    if (guardAuth(e)) return
+    alert('导出失败: ' + e.message)
   }
 }
 
@@ -504,6 +523,10 @@ async function onSwitchHistoryReview(reviewItem) {
     }
   } finally {
     resetting--
+    if (resetting === 0 && activeTab.value !== 'commit') {
+      // 窗口内被抑制的 tab 点击需要补偿加载
+      await loadTab(activeTab.value)
+    }
   }
 }
 
@@ -555,11 +578,8 @@ async function onSaveTemplate() {
   }
 }
 
-async function onWorkdirSwitched(info) {
-  resetting++
-  epoch++
-  workDir.value = info.workDir || ''
-  // 工作目录切换后重置全部状态并按新目录重新加载（watch 在重置期间被抑制）
+// 重置全部页面状态（workdir 切换与重新认证共用）
+function resetState() {
   activeTab.value = 'working'
   selectedCommitHash.value = ''
   diffData.value = null
@@ -569,17 +589,32 @@ async function onWorkdirSwitched(info) {
   commitTotalPages.value = 1
   reviewList.value = []
   reviewLabel.value = ''
+  templateContent.value = ''
   saved.value = true
   error.value = ''
+}
+
+// 在重置窗口内执行加载：抑制 watch，窗口结束后补偿加载被抑制的 tab 切换
+async function withResetWindow(fn) {
+  resetting++
+  epoch++
   try {
-    await initialize()
+    await fn()
   } finally {
     resetting--
     if (resetting === 0 && activeTab.value !== 'working') {
-      // 重置窗口内的 tab 点击被 watch 抑制，补偿加载当前标签
       await loadTab(activeTab.value)
     }
   }
+}
+
+async function onWorkdirSwitched(info) {
+  await withResetWindow(async () => {
+    workDir.value = info.workDir || ''
+    // 工作目录切换后重置全部状态并按新目录重新加载
+    resetState()
+    await initialize()
+  })
 }
 
 function formatTime(ts) {
@@ -591,15 +626,7 @@ function formatTime(ts) {
 async function initialize() {
   const e = epoch
   await loadDiff('working')
-  try {
-    const review = await getReview()
-    if (stale(e)) return
-    if (review.type === 'commit' && review.commit) {
-      selectedCommitHash.value = review.commit
-    }
-  } catch (err) {
-    if (guardAuth(err)) return
-  }
+  // selectedCommitHash 的恢复由 loadTab('commit') 在进入 commit 页时统一处理
   try {
     const cfg = await getConfig()
     if (stale(e)) return
@@ -611,6 +638,7 @@ async function initialize() {
     }
   } catch (err) {
     if (guardAuth(err)) return
+    if (stale(e)) return
     reviewLabel.value = ''
   }
   await loadReviews(e)
@@ -621,20 +649,11 @@ async function onAuthenticated() {
   if (!saved.value && comments.value.length > 0) {
     window.alert('服务认证已更新，未保存的评论已被重置，请重新确认后再提交')
   }
-  resetting++
-  epoch++
-  activeTab.value = 'working'
-  comments.value = []
-  saved.value = true
-  authed.value = true
-  try {
+  await withResetWindow(async () => {
+    resetState()
+    authed.value = true
     await initialize()
-  } finally {
-    resetting--
-    if (resetting === 0 && activeTab.value !== 'working') {
-      await loadTab(activeTab.value)
-    }
-  }
+  })
 }
 
 onMounted(async () => {
@@ -650,6 +669,14 @@ onMounted(async () => {
       authed.value = true
       await initialize()
     }
+  }
+})
+
+// 有未保存评论时拦截页面关闭/刷新
+window.addEventListener('beforeunload', (e) => {
+  if (!saved.value && comments.value.length > 0) {
+    e.preventDefault()
+    e.returnValue = ''
   }
 })
 </script>

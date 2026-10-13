@@ -2,9 +2,7 @@
   <div class="border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden bg-white dark:bg-gray-900 shadow-sm">
     <div class="px-4 py-2.5 bg-gray-50 dark:bg-gray-800/60 border-b dark:border-gray-800 text-sm font-medium flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <span v-if="file.isNew" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 font-bold">+</span>
-        <span v-else-if="file.isDeleted" class="w-5 h-5 rounded text-xs flex items-center justify-center bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-bold">−</span>
-        <span v-else class="w-5 h-5 rounded text-xs flex items-center justify-center bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-bold">M</span>
+        <FileBadge :file="file" />
         <span class="font-mono text-xs">{{ displayPath }}</span>
       </div>
       <button
@@ -17,13 +15,7 @@
 
     <!-- Existing comments for this file -->
     <div v-if="fileComments.length" class="border-b dark:border-gray-800 px-4 py-3 space-y-2 bg-amber-50/60 dark:bg-amber-900/10">
-      <div v-for="c in fileComments" :key="c.id" class="text-sm bg-white/60 dark:bg-gray-900/40 rounded-lg px-3 py-2 border border-amber-200/50 dark:border-amber-900/30">
-        <div class="text-gray-500 text-xs mb-1 flex items-center justify-between">
-          <span class="font-mono">{{ c.lineKey ? `Line ${c.lineKey}` : 'File comment' }}</span>
-          <button class="text-red-500 hover:text-red-600 hover:underline" @click="removeComment(c.id)">删除</button>
-        </div>
-        <div class="whitespace-pre-wrap">{{ c.content }}</div>
-      </div>
+      <CommentCard v-for="c in fileComments" :key="c.id" :comment="c" removable @remove="removeComment" />
     </div>
 
     <!-- File-level editing box -->
@@ -94,6 +86,9 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import FileBadge from './FileBadge.vue'
+import CommentCard from './CommentCard.vue'
+import { lineClass, linePrefix, fileDisplayPath } from '../utils/diff.js'
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -101,20 +96,10 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:comments'])
 
-const displayPath = computed(() => props.file.newFile || props.file.oldFile || 'unknown')
+const displayPath = computed(() => fileDisplayPath(props.file))
 
 const fileComments = computed(() => props.comments.filter(c => c.filePath === displayPath.value))
 
-function lineClass(type) {
-  if (type === 'addition') return 'bg-green-50 dark:bg-green-900/10'
-  if (type === 'deletion') return 'bg-red-50 dark:bg-red-900/10'
-  return ''
-}
-function linePrefix(type) {
-  if (type === 'addition') return '+'
-  if (type === 'deletion') return '−'
-  return ' '
-}
 function lineKey(line) {
   if (line.type === 'deletion' && line.oldLineNo > 0) {
     return `old:${line.oldLineNo}`

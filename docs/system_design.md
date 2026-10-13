@@ -2,22 +2,22 @@
 
 ## 项目概述
 
-**WTF2PR** 是一个本地 Git 代码 Review 工具。它能读取本地 Git 仓库中未提交的变更（Working Tree，包含已修改、已暂存、未跟踪文件）或某个具体 Commit 的 Diff，在 Web 页面上进行可视化展示。用户可对文件整体或具体代码行添加 Review 意见，最终将 Review 结果以结构化格式（Markdown / JSON / XML）一次性导出，交给 AI Coding 工具进行问题修复。
+**WTF2PR** 是一个本地 Git 代码 Review 工具。它能读取本地 Git 仓库中未提交的变更（Working Tree，包含已修改、已暂存、未跟踪文件）或某个具体 Commit 的 Diff，在 Web 页面上进行可视化展示。用户可对文件整体或具体代码行添加 Review 意见，最终将 Review 结果以结构化格式（Markdown / JSON / XML / 自定义 Template）一次性导出，交给 AI Coding 工具进行问题修复。
 
 ## 技术栈
 
 - **后端**：Go + Gin 框架 + Cobra（CLI 入口）
 - **前端**：Vue 3 (Vite) + Tailwind CSS v4
 - **打包**：Go 官方 `embed` 将前端产物打包为单一可执行二进制文件
-- **依赖**：`github.com/google/uuid` 用于生成唯一 Review ID
+- **依赖**：`github.com/google/uuid` 用于生成唯一 Review ID；`gopkg.in/yaml.v3` 用于解析 YAML 启动配置
 
 ### 提供设定
 
 1. 后端通过 `github.com/spf13/cobra` 提供命令行入口。
 2. 后端通过 Go 官方 `embed` 将前端页面打包到一个可执行二进制文件。
-3. 通过 `wtf2pr web [--config={配置文件}] [--port={端口}] [--workdir={工作目录}]` 指令启动服务；服务配置集中在 YAML 配置文件（默认 `~/.wtf2pr/config.yaml`），支持 `port` / `host` / `workdir` / `token` / `allowed_dirs`，优先级为 CLI 显式指定 > 配置文件 > 默认值。
-4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录，旧版扁平存储数据首次启动时自动迁移。
-5. 访问令牌为空时每次启动随机生成（可在配置文件中指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer` 或 `?token=`）。
+3. 通过 `wtf2pr web [--config={配置文件}] [--port={端口}] [--workdir={工作目录}]` 指令启动服务；服务配置集中在 YAML 配置文件（默认 `~/.wtf2pr/config.yaml`），支持 `port` / `host` / `workdir` / `token` / `allowed_dirs`；`port` 与 `workdir` 支持 CLI 覆盖（优先级：CLI 显式指定 > 配置文件 > 默认值），其余配置项以配置文件为准。
+4. Review 数据按工作目录隔离持久化到 `~/.wtf2pr/workspaces/<目录哈希>/review_{uuid}.json`，支持历史 Review 的列表查看与切换；启动后可在页面上切换工作目录（目标必须是 git 仓库），旧版扁平存储数据首次启动时自动迁移。
+5. 访问令牌为空时每次启动随机生成（可在配置文件中指定固定值），Web 端所有 API 需携带令牌访问（`Authorization: Bearer`、`X-Auth-Token` 头或 `?token=` 查询参数）。
 6. 配置文件 `allowed_dirs` 限制 Web 端可访问的文件路径范围；切换工作目录与目录浏览越界时返回 403。
 
 ## 系统架构
@@ -47,12 +47,12 @@
 - **Review 模块**：
   - 内存存储 + JSON 文件持久化，线程安全（`sync.RWMutex`）。
   - 支持 `SwitchFile` 动态切换存储文件，切换时自动加载该文件已有评论。
-  - 新建 Review 时生成 UUID，创建新的 `review_{uuid}.json` 文件。
-  - 提供扫描目录接口，列出所有历史 Review 文件。
+  - 新建 Review 时生成 UUID 并切换存储路径，文件在首次非空保存时才写入 `review_{uuid}.json`（空评论保存则删除文件）。
+  - 提供扫描目录接口，列出有评论的历史 Review 文件（零评论文件被过滤）。
 - **Export 模块**：
   - 仅导出**包含 Review 评论的核心信息**，避免完整 diff 原文导致的 Token 冗余。
   - 输出包含：Commit 元信息、被评论文件路径、评论内容、对应代码行、Hunk Header。
-  - 支持 Markdown、JSON、XML 三种格式。
+  - 支持 Markdown、JSON、XML 与自定义 Template（Go `text/template`）四种格式。
 - **Server 模块**：
   - 提供 RESTful API（`/api/auth/check`、`/api/diff`、`/api/commits`、`/api/config`、`/api/review`、`/api/review/detail`、`/api/reviews`、`/api/review/new`、`/api/review/switch`、`/api/export`、`/api/template`、`/api/workdir`、`/api/fs/browse`）。
   - 所有 API 经 token 鉴权中间件（常量时间比较）；review ID 经白名单校验，防止路径遍历越出存储目录。
@@ -69,7 +69,7 @@
 
 ### 4. 测试
 
-- 后端单元测试覆盖 `internal/git`（Diff 解析、未跟踪文件读取）、`internal/review`（存储与持久化）、`internal/export`（格式化导出）、`internal/server`（API 集成测试）。
+- 后端单元测试覆盖 `internal/config`（配置加载与路径访问控制）、`internal/git`（Diff 解析、未跟踪文件读取）、`internal/review`（存储与持久化）、`internal/export`（格式化导出）、`internal/server`（API 集成测试）。
 - 测试文档详见 `docs/unit_tests.md`。
 
 ## AI 开发守则

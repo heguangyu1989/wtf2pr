@@ -20,6 +20,7 @@
             <option value="markdown">Markdown</option>
             <option value="json">JSON</option>
             <option value="xml">XML</option>
+            <option value="template">Template</option>
           </select>
           <button class="px-2 py-1 border text-xs rounded hover:bg-gray-50 dark:hover:bg-gray-800" @click="doExport">导出</button>
           <button class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300" @click="$emit('close')">关闭</button>
@@ -109,7 +110,7 @@ const exportFormat = ref('markdown')
 const hasDiff = computed(() => props.data.type === 'commit' && props.data.diff && props.data.diff.files && props.data.diff.files.length > 0)
 const commitInfo = computed(() => props.data.diff?.commitInfo || null)
 const selectedIndex = ref(0)
-const selectedFile = computed(() => props.data.diff?.files[selectedIndex.value] || null)
+const selectedFile = computed(() => props.data.diff?.files?.[selectedIndex.value] || null)
 
 function doExport() {
   emit('export', exportFormat.value)

@@ -134,10 +134,9 @@ const switching = ref(false)
 const switchError = ref('')
 
 function shortPath(p) {
-  const home = '~'
   const parts = p.split('/')
   if (parts.length <= 2) return p
-  return home + '…/' + parts.slice(-2).join('/')
+  return '…/' + parts.slice(-2).join('/')
 }
 
 // 浏览并发序号：仅最新一次浏览的结果生效，避免快速点击时后到响应覆盖

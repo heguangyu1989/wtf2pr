@@ -1,7 +1,7 @@
 const BASE = '/api'
 const TOKEN_KEY = 'wtf2pr_token'
 
-export function getToken() {
+function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
 
@@ -45,9 +45,11 @@ async function request(url, options = {}) {
   try {
     data = await res.json()
   } catch {
-    throw new Error(`请求失败 (HTTP ${res.status})`)
+    const err = new Error(`请求失败 (HTTP ${res.status})`)
+    err.status = res.status
+    throw err
   }
-  if (res.status === 401 || data.code === 401) {
+  if (res.status === 401) {
     const err = new Error(data.message || '未授权，请输入访问令牌')
     err.status = 401
     throw err

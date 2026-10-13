@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -49,11 +50,11 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 }
 
 func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
-	if commit == "" {
-		return nil, fmt.Errorf("commit hash is required")
+	if err := validateCommitRef(commit); err != nil {
+		return nil, err
 	}
-	// 获取 commit 信息
-	infoCmd := exec.Command("git", "show", "-s", "--format=%H%n%an%n%ad%n%s", commit)
+	// 获取 commit 信息（--end-of-options 防止选项注入）
+	infoCmd := exec.Command("git", "show", "-s", "--format=%H%n%an%n%ad%n%s", "--end-of-options", commit)
 	infoCmd.Dir = workDir
 	infoOut, err := infoCmd.Output()
 	if err != nil {
@@ -68,8 +69,8 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 		commitInfo.Message = strings.Join(infoLines[3:], "\n")
 	}
 
-	// 获取 diff
-	diffCmd := exec.Command("git", "show", commit, "--format=", "-p")
+	// 获取 diff（选项需在 --end-of-options 之前）
+	diffCmd := exec.Command("git", "show", "--format=", "-p", "--end-of-options", commit)
 	diffCmd.Dir = workDir
 	diffOut, err := diffCmd.Output()
 	if err != nil {
@@ -161,16 +162,31 @@ func getUntrackedFiles(workDir string) ([]string, error) {
 // CommitExists 检查指定的 commit hash 是否存在于当前仓库且类型为 commit
 func CommitExists(workDir, hash string) bool {
 	hash = strings.TrimSpace(hash)
-	if hash == "" {
+	if err := validateCommitRef(hash); err != nil {
 		return false
 	}
-	cmd := exec.Command("git", "cat-file", "-t", hash)
+	cmd := exec.Command("git", "cat-file", "-t", "--end-of-options", hash)
 	cmd.Dir = workDir
 	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 	return strings.TrimSpace(string(out)) == "commit"
+}
+
+// commitRefPattern 合法的 commit 引用（hash/分支/tag/HEAD~3 等 rev 形式），拒绝以 "-" 开头防止选项注入。
+// 仅允许 ASCII 常见字符，非 ASCII 分支名（UTF-8）会被拒绝——前端只传 git log 返回的 hex hash，属于有意的收窄
+var commitRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/^{}~-]{0,255}$`)
+
+// validateCommitRef 校验 commit 引用合法性
+func validateCommitRef(commit string) error {
+	if commit == "" {
+		return fmt.Errorf("commit hash is required")
+	}
+	if !commitRefPattern.MatchString(commit) {
+		return fmt.Errorf("invalid commit ref: %q", commit)
+	}
+	return nil
 }
 
 // IsGitRepo 检查指定目录是否位于一个 git 仓库中
@@ -184,8 +200,22 @@ func IsGitRepo(workDir string) bool {
 	return strings.TrimSpace(string(out)) == "true"
 }
 
+// HasGitDir 检查目录下是否存在 .git（目录或文件，覆盖 submodule/worktree）；轻量探测，适合高频调用
+func HasGitDir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
 func readUntrackedFileAsDiff(workDir, filePath string) (models.FileDiff, error) {
 	fullPath := filepath.Join(workDir, filePath)
+	// 只读取普通文件：跳过符号链接等，避免越出仓库边界读取任意文件
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return models.FileDiff{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return models.FileDiff{}, fmt.Errorf("not a regular file: %s", filePath)
+	}
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		return models.FileDiff{}, err

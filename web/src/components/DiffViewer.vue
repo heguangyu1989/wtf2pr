@@ -6,7 +6,7 @@
   <div v-else-if="error" class="h-full flex items-center justify-center">
     <div class="text-sm text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-3">{{ error }}</div>
   </div>
-  <div v-else-if="!diffData || !diffData.files.length" class="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500">
+  <div v-else-if="!diffData || !diffData.files?.length" class="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500">
     <svg class="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
     </svg>
@@ -108,7 +108,7 @@ const totalFiles = computed(() => props.diffData?.files?.length || 0)
 const totalFilePages = computed(() => Math.max(1, Math.ceil(totalFiles.value / filePageSize)))
 const startIndex = computed(() => (filePage.value - 1) * filePageSize)
 const pagedFiles = computed(() => props.diffData?.files?.slice(startIndex.value, startIndex.value + filePageSize) || [])
-const selectedFile = computed(() => props.diffData?.files[selectedIndex.value] || null)
+const selectedFile = computed(() => props.diffData?.files?.[selectedIndex.value] || null)
 
 function fileReviewCount(file) {
   const path = file.newFile || file.oldFile || ''

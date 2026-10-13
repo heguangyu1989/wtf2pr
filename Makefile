@@ -22,6 +22,7 @@ ensure-dist:
 
 ## dev-server: 开发模式下运行后端（不重新构建前端）
 ##   工作目录等配置读取 ~/.wtf2pr/config.yaml，可用 WTF2PR_CONFIG 覆盖配置文件路径
+##   注：端口固定 8322 以匹配 vite dev server 的 proxy 目标，配置文件的 port 在 dev 模式下不生效
 ##
 dev-server: ensure-dist
 	@echo "Starting backend server..."

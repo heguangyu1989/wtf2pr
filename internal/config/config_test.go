@@ -86,3 +86,52 @@ func TestIsAllowedEmptyList(t *testing.T) {
 		t.Errorf("empty allowed list should allow everything")
 	}
 }
+
+func TestNormalizePathBoundaries(t *testing.T) {
+	// 空路径应报错
+	if _, err := NormalizePath(""); err == nil {
+		t.Errorf("expected error for empty path")
+	}
+
+	// 裸 ~ 展开为 home
+	home, _ := os.UserHomeDir()
+	got, err := NormalizePath("~")
+	if err != nil || got != home {
+		t.Errorf("expected ~ -> %s, got %s, err=%v", home, got, err)
+	}
+
+	// 相对路径转绝对
+	got, err = NormalizePath(".")
+	cwd, _ := os.Getwd()
+	if err != nil || got != cwd {
+		t.Errorf("expected . -> %s, got %s, err=%v", cwd, got, err)
+	}
+
+	// 尾部斜杠被清理（先归一化，兼容 macOS /var 符号链接）
+	dir := t.TempDir()
+	dir, err = NormalizePath(dir)
+	if err != nil {
+		t.Fatalf("failed to normalize temp dir: %v", err)
+	}
+	got, err = NormalizePath(dir + "/")
+	if err != nil || got != dir {
+		t.Errorf("expected trailing slash cleaned to %s, got %s, err=%v", dir, got, err)
+	}
+
+	// 不存在的目标不报错，返回清理后的绝对路径
+	missing := filepath.Join(dir, "not-exist")
+	got, err = NormalizePath(missing)
+	if err != nil || got != missing {
+		t.Errorf("expected %s, got %s, err=%v", missing, got, err)
+	}
+}
+
+func TestIsAllowedRootDir(t *testing.T) {
+	// 允许列表包含根目录时全部放行
+	if !IsAllowed([]string{string(os.PathSeparator)}, "/etc") {
+		t.Errorf("root dir in allowed list should allow everything")
+	}
+	if !IsAllowed([]string{string(os.PathSeparator)}, "/") {
+		t.Errorf("root dir itself should be allowed")
+	}
+}

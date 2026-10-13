@@ -165,6 +165,11 @@ type ExportResponse struct {
 	Content string       `json:"content"`
 }
 
+// WorkspaceMeta 工作区元信息（持久化在 workspace.json）
+type WorkspaceMeta struct {
+	Path string `json:"path"`
+}
+
 // WorkspaceItem 工作区条目（数据按工作目录区分存储）
 type WorkspaceItem struct {
 	ID      string `json:"id"`
@@ -175,10 +180,21 @@ type WorkspaceItem struct {
 // WorkdirInfo 当前工作目录与已知工作区信息
 type WorkdirInfo struct {
 	WorkDir     string          `json:"workDir"`
-	StorageDir  string          `json:"storageDir"`
 	Workspaces  []WorkspaceItem `json:"workspaces"`
 	AllowedDirs []string        `json:"allowedDirs"`
 	Restricted  bool            `json:"restricted"`
+}
+
+// AuthCheckResponse 鉴权校验响应
+type AuthCheckResponse struct {
+	Authenticated bool `json:"authenticated"`
+}
+
+// ConfigResponse 当前配置信息响应
+type ConfigResponse struct {
+	ReviewFile string `json:"reviewFile"`
+	ReviewID   string `json:"reviewID"`
+	WorkDir    string `json:"workDir"`
 }
 
 // SwitchWorkdirRequest 切换工作目录请求
@@ -200,6 +216,11 @@ type BrowseResponse struct {
 	IsGit     bool       `json:"isGit"`
 	Truncated bool       `json:"truncated"`
 	Dirs      []DirEntry `json:"dirs"`
+}
+
+// TemplateContent 导出模板内容（GET/POST /api/template 共用）
+type TemplateContent struct {
+	Content string `json:"content"`
 }
 
 // APIResponse 通用 API 响应包装

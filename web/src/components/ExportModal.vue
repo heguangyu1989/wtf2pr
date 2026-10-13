@@ -24,7 +24,7 @@ const props = defineProps({
   format: { type: String, default: '' },
   content: { type: String, default: '' },
 })
-const emit = defineEmits(['close'])
+defineEmits(['close'])
 
 const copied = ref(false)
 

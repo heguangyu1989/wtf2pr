@@ -1,0 +1,93 @@
+{
+  "review": {
+    "id": "R1-20261013",
+    "title": "wtf2pr feat/workspace-auth-ui 全面 Review（配置驱动 / 鉴权 / 路径限制）",
+    "date": "2026-10-13",
+    "machine": "开发机",
+    "method": "5 路 fresh-eyes（正确性/简洁性/安全性能/前端全维度/契约一致性）+ 主 agent 综合判别 + 2 路修复后复查",
+    "task": "wtf2pr-workspace-auth-ui",
+    "ts": "202610131857",
+    "report_path": "docs/reviews/2026-10-13-wtf2pr-full-review/R1-20261013.html",
+    "projects": ["wtf2pr"],
+    "scopes": [
+      {"repo": "wtf2pr", "base": "main", "branch": "feat/workspace-auth-ui", "stat": "25 文件 +2260/-339（3 commits）+ 修复 19 文件 +531/-239", "commits": "81e8d56/32565ba/0970533"}
+    ],
+    "out_of_scope": "main 分支存量行为（reviews N+1、diff 无界读）登记为技术债，不在本分支处理",
+    "verdict": "分支包含 3 个 Critical 安全/数据问题（git 选项注入任意文件写、符号链接任意文件读、commit 切换评论错位覆盖）与 1 个迁移死代码，均已修复并配实证测试；两轮 fresh-eyes 复查又捕获修复引入的 watcher 死循环（Critical）并闭环。当前形态可合并，4 项安全/性能语义事项待人类拍板。",
+    "verdict_level": "warn"
+  },
+  "summary_rows": [
+    {"cells": ["wtf2pr（5 路 + 2 路复查）", "3（已全部修复）", "4", "12（9 修/2 保持/1 技术债）", "◐ 修复完成，待确认项人类拍板后可合并"]}
+  ],
+  "confirmations": [
+    {"id": "Q1", "title": "弱 token 无告警：配置文件允许 token: \"123\" 这类弱值", "background": "internal/server/server.go:212-233 authMiddleware 只比较不评估强度；随机 128-bit token 无暴破风险，但用户自配弱值会显著降低防护", "options": "A. 配置 token 长度 <16 时 stderr 告警（倾向，纯提示不改行为）；B. 保持现状", "status": "pending"},
+    {"id": "Q2", "title": "token 明文打印到 stdout 且经 query 传递", "background": "cmd/wtf2pr/main.go:99,106 启动打印完整 token 与带 token 的 URL；容器/systemd 下会进入持久日志；query 传参会留在浏览器历史（前端已在读取后摘除）。本地工具属惯例（类 jupyter）", "options": "A. 保持现状并加一句安全提示（倾向）；B. 日志中打掩码、只在首次访问时展示", "status": "pending"},
+    {"id": "Q3", "title": "CORS Allow-Origin: * 且鉴权无速率限制", "background": "internal/server/server.go:198-209；token 是唯一屏障，随机 token 下不可直接利用，属纵深防御问题", "options": "A. 本地工具保持现状（倾向）；B. 默认 127.0.0.1 时省略 CORS 头、失败计数加延迟", "status": "pending"},
+    {"id": "Q4", "title": "性能技术债（pre-existing）：/api/reviews N+1、diff/文件无界读入内存、巨型目录全量 ReadDir", "background": "internal/server/server.go:605 每 review 全量读+反序列化并 spawn git cat-file；internal/git/git.go:27,74,189 cmd.Output 全量缓冲；server.go:429 ReadDir 全量。均非本分支引入", "options": "A. 登记技术债另立任务（倾向，本分支不扩大范围）；B. 本分支顺手加索引文件/大小上限", "status": "pending"}
+  ],
+  "findings": [
+    {"id": "1", "level": "critical", "location": "internal/git/git.go:56,72", "title": "git 选项注入：commit=--output=<path> 任意文件写，击穿 allowed_dirs", "evidence": "实测 git show --output=/tmp/pwned 写出攻击者可控内容；/api/diff?type=commit&commit= 未校验", "fix": "validateCommitRef 白名单（拒绝 - 开头与非法字符）+ 所有 git show/cat-file 加 --end-of-options；3 个实证测试", "status": "fixed"},
+    {"id": "2", "level": "critical", "location": "internal/git/git.go:206-214", "title": "未跟踪符号链接跟随 → allowed_dirs 边界外任意文件读", "evidence": "允许 repo 内 ln -s /etc/hostname leak.txt，working diff 响应含目标文件内容", "fix": "os.Lstat 仅读取普通文件，符号链接跳过；TestReadUntrackedFileAsDiff_SymlinkSkipped", "status": "fixed"},
+    {"id": "3", "level": "critical", "location": "internal/server/server.go:139,143", "title": "export.tpl 迁移死代码：过滤器恒跳过，旧用户模板静默遗弃", "evidence": "三路 reviewer 独立确认：base=export.tpl 时过滤条件恒真必 continue；实证迁移后模板仍在 dataRoot", "fix": "过滤器放行 export.tpl + TestLegacyExportTemplateMigration", "status": "fixed"},
+    {"id": "4", "level": "critical", "location": "web/src/App.vue:319-345", "title": "下拉切换 commit 后评论与 commit 绑定错位，保存即写入新 commit", "evidence": "换 hash 只 loadDiff，comments 与'已保存'徽标保留；DiffFile 按路径匹配把 A 的评论渲染在 B 的同名文件上", "fix": "watcher 内任何上下文变化先 confirmDiscardIfDirty，确认后清空评论；取消则经 skipHashWatch 回退；loadTab 仅在 commit 匹配时加载评论", "status": "fixed"},
+    {"id": "5", "level": "critical", "location": "web/src/App.vue:328-333（修复引入，复查捕获）", "title": "修复回归：同步 resetting++/assign/resetting-- 抑制不了异步 watcher，确认取消后弹窗死循环", "evidence": "复查 agent 用仓库自带 vue 3.5.32 实证 ping-pong：watcher flush 时 resetting 已归零，回退再次触发 watcher", "fix": "改消费式跳过标记 skipHashWatch（回退/恢复前置位，watcher 消费一次）", "status": "fixed"},
+    {"id": "6", "level": "critical", "location": "internal/server/server_test.go:414-439", "title": "TestHandleGetReviewsFiltersEmpty 空转断言：从未真实验证过滤逻辑", "evidence": "review/new 不落盘，循环零次执行，删掉过滤代码测试照样通过", "fix": "预置零评论/有评论真实文件，双向断言", "status": "fixed"},
+    {"id": "7", "level": "important", "location": "internal/config/config.go:89", "title": "IsAllowed 根目录边界失效：allowed_dirs 含 / 时全部 403", "evidence": "dir+separator='//' 永不匹配，实证 IsAllowed([/], /etc)=false", "fix": "特判根目录 + TestIsAllowedRootDir", "status": "fixed"},
+    {"id": "8", "level": "important", "location": "internal/server/server.go:33", "title": "Options.DataRoot 仅测试消费（测试专用导出字段）", "evidence": "生产调用 main.go 不设置；仅测试赋值", "fix": "改包内未导出 dataRoot（测试同包可注入）", "status": "fixed"},
+    {"id": "9", "level": "important", "location": "internal/server/server.go:113,245; internal/config/config.go:44", "title": "三处不可达过度防御：getStorageDir 回退、setupWorkspace dataRoot 检查、ResolvedAllowedDirs nil 检查", "evidence": "NewServer 已保证 dataRoot/storageDir 非空；loadConfig 保证 cfg 非 nil", "fix": "全部删除，防御只留系统边界", "status": "fixed"},
+    {"id": "10", "level": "important", "location": "internal/server/server.go:295; pkg/models/models.go:178", "title": "storageDir 响应死字段双份（config map + WorkdirInfo）", "evidence": "grep web/src 零消费", "fix": "删除字段，测试改为断言服务端状态", "status": "fixed"},
+    {"id": "11", "level": "important", "location": "internal/server/server.go:407,445,459", "title": "git 仓库判定两套实现（IsGitRepo vs 内联 .git stat），语义漂移", "evidence": "submodule/worktree 的 .git 文件场景行为不一致；违反仓守则'一个功能只有一个函数实现'", "fix": "git.HasGitDir 收口轻量探测，IsGitRepo 保留权威校验", "status": "fixed"},
+    {"id": "12", "level": "important", "location": "internal/server/server.go:127,279,285", "title": "通信用 map/匿名 struct（workspace.json、auth/check、config 响应），违反仓守则#2", "evidence": "schema 读写两侧分离；createdAt 持久化死字段", "fix": "models.WorkspaceMeta/AuthCheckResponse/ConfigResponse/TemplateContent 结构体化", "status": "fixed"},
+    {"id": "13", "level": "important", "location": "web/src/App.vue:596", "title": "启动竞态：initialize 恢复 selectedCommitHash 可被丢弃且无补偿", "evidence": "stale(e) 提前 return 后 hash 永不恢复，头部 workDir 长期空白", "fix": "恢复下沉 loadTab('commit') getReview 成功后（skipHashWatch 防重复加载）", "status": "fixed"},
+    {"id": "14", "level": "important", "location": "web/src/App.vue:517", "title": "onSwitchHistoryReview finally 缺 tab 补偿加载，与孪生函数不一致", "evidence": "窗口内 tab 点击被抑制后无补偿，用户困在空白 tab", "fix": "补同款补偿；重置逻辑收敛 resetState()+withResetWindow()", "status": "fixed"},
+    {"id": "15", "level": "important", "location": "web/src/App.vue:322-327（复查捕获）", "title": "修复遗漏：A → 占位项 → B 路径绕过 dirty 确认，错位保存仍可达", "evidence": "!hash 分支 early-return 在确认之前；oldHash='' 时跳过确认", "fix": "确认前移到所有分支之前，任何上下文变化统一处理", "status": "fixed"},
+    {"id": "16", "level": "important", "location": "internal/config/config_test.go:99; internal/server/server_test.go:814,862", "title": "darwin 测试必挂：t.TempDir() 未归一化（/var→/private/var 符号链接）", "evidence": "复查 agent 符号链接实证 NormalizePath 返回值与未归一化期望不等", "fix": "断言前一律 NormalizePath", "status": "fixed"},
+    {"id": "17", "level": "important", "location": "docs/unit_tests.md", "title": "测试清单文档严重滞后：缺 internal/config 全部、server 缺 22 个、统计口径错误", "evidence": "实际 5 包 77 测试 vs 文档 4 包约 30", "fix": "按实际清单重写（文档回写）", "status": "fixed"}
+  ],
+  "suggestions": [
+    {"group": "wtf2pr（已修复）", "items": [
+      {"id": "S1", "location": "internal/server/server.go", "text": "detail/export 取路径+读文件纳入同一把读锁，消除跨锁瞬时窗口", "status": "fixed"},
+      {"id": "S2", "location": "internal/server/server.go:478", "text": "/api/commits pageSize 无上限可 DoS → cap 100（含测试）", "status": "fixed"},
+      {"id": "S3", "location": "internal/server/server.go:446", "text": "browse 不展示符号链接目录 → os.Stat 跟随（越界仍被 IsAllowed 拦截）", "status": "fixed"},
+      {"id": "S4", "location": "internal/server/server.go:137", "text": "migrateLegacyData 可能抢走降级场景的活动 review 文件 → 跳过活动文件", "status": "fixed"},
+      {"id": "S5", "location": "internal/server/server.go:90", "text": "setupWorkspace 失败静默回退扁平布局 → stderr 告警", "status": "fixed"},
+      {"id": "S6", "location": "web/src", "text": "前端一揽子：getConfig catch 补 stale、重置遗漏 templateContent、ReviewResultModal 补 template 选项、client.js 非 JSON 401 丢 status、files 空值可选链、beforeunload 拦截、DiffFile/ReadonlyDiffFile 抽取 utils/diff.js+FileBadge+CommentCard、doExport 收口、shortPath 误导前缀", "status": "fixed"},
+      {"id": "S7", "location": "README/docs", "text": "文档同步：四种导出格式、X-Auth-Token、新建 Review 不落盘、workspace.json、workdir 须 git 仓库、git≥2.20 要求、Makefile dev-server 端口钉死原因、依赖清单补 yaml.v3", "status": "fixed"},
+      {"id": "S8", "location": "internal/server/*.json", "text": "源码目录残留 35 个 4 月 review_*.json 开发残留 → 已清理", "status": "fixed"}
+    ]},
+    {"group": "wtf2pr（保持现状/技术债）", "items": [
+      {"id": "S9", "location": "internal/git/git.go:179", "text": "commitRefPattern 收窄非 ASCII 分支名（UTF-8）：前端只传 hex hash，有意收窄，已加注释说明取舍", "status": "accepted"},
+      {"id": "S10", "location": "cmd/wtf2pr/main.go:99,106", "text": "token 启动日志打印两次（Access token 行 + URL 行）：显式 token 行便于复制，保持现状", "status": "accepted"},
+      {"id": "S11", "location": "internal/server/server.go:605; internal/git/git.go:27", "text": "reviews N+1、diff/文件无界读、巨型目录全量 ReadDir（均 pre-existing）→ 登记技术债另立任务", "status": "pending"}
+    ]}
+  ],
+  "decisions": [
+    {"topic": "静态资源 NoRoute 无鉴权", "source": "三轮 review 逐轮确认", "note": "SPA 需先加载才能输入 token，embed dist 无敏感内容，设计使然"},
+    {"topic": "allowed_dirs 不约束启动初始 workdir（仅警告）", "source": "README/system_design 已写明边界", "note": "命令行是运维显式操作，限制针对运行期 Web 操作"},
+    {"topic": "403 回显绝对路径 / TOCTOU / CORS *", "source": "三轮 review 确认", "note": "本地单用户工具风险可接受，列入 Q3 待人类确认纵深加固"},
+    {"topic": "handleSaveReview 持 RLock 跨 git.GetDiff", "source": "第 2/3 轮 review", "note": "一致性有意为之，大仓库下切换会阻塞，接受"},
+    {"topic": "X-Auth-Token 第三鉴权通道", "source": "简洁性角度疑似仅测试消费", "note": "API 调用方合法通道且有专项测试，保留并补文档（README/system_design 已回写）"},
+    {"topic": "review_*.json 宽泛迁移（含非 uuid 自定义 id）", "source": "多轮确认", "note": "~/.wtf2pr 是工具私有目录，向后兼容用户数据；reviewbackup.json 类无下划线文件已精确排除（有测试）"}
+  ],
+  "strengths": [
+    "并发设计严谨且有真实对抗性测试：锁序统一 s.mu → store.mu，TestConcurrentSwitchAndSave/-ReviewAndSave 在 -race 下断言'review 文件必在当前存储目录内'这一有意义不变量",
+    "安全校验有实证负向测试：4 种遍历 ID × 3 入口、符号链接逃逸、选项注入后断言文件不存在，双向验证而非走过场",
+    "修复回归被复查机制闭环捕获：watcher 死循环（C1）由复查 agent 用仓库自带 Vue 实证复现后才修复，多轮机制价值兑现",
+    "前端守卫体系分工清晰：epoch（上下文）/diffSeq/commitSeq/browseSeq 各司其职，catch 块普遍遵循 guardAuth → stale → 回写顺序",
+    "权限基线一致：workspace 目录 0700、数据文件 0600、配置文件权限过宽 stderr 告警，超出同类本地工具常见水准"
+  ],
+  "verifications": [
+    {"who": "正确性角度", "what": "go build/vet/gofmt + go test -race -count=1 ./internal/...", "result": "全部通过（直接退出码 0）"},
+    {"who": "前端角度", "what": "npm run lint、npm run build", "result": "退出码 0；XSS/泄漏面 grep 零命中"},
+    {"who": "安全角度", "what": "git 选项注入与符号链接读在 /tmp 真实仓库复现", "result": "修复前均可复现，修复后注入报 fatal 不落文件、链接被跳过"},
+    {"who": "修复后复查（后端）", "what": "11 组发现逐条核验 + 全量 -race 测试", "result": "全部闭合；捕获 darwin 新测试与 reviewFileForID 死代码并再修"},
+    {"who": "修复后复查（前端）", "what": "watcher 机制用仓库自带 vue 3.5.32 实证", "result": "捕获 resetting 同步窗口失效（C1 死循环）、占位旁路（I1）、重复加载（I2），已用 skipHashWatch 统一修复"},
+    {"who": "主 agent", "what": "e2e 冒烟：注入 500 不落文件、HEAD diff 正常、leak.txt 跳过、export.tpl 迁移可读、页面构建嵌入", "result": "全部符合预期"},
+    {"who": "主 agent（修复后再复验）", "what": "go test -race 全量 + eslint + vite build", "result": "5 包 ok、lint/build 退出码 0"}
+  ],
+  "notes": "本机 8322 端口有用户此前启动的旧版 dev-server 进程（旧参数 --host），评测未干扰；重启后自动使用新配置驱动。",
+  "next_steps": [
+    "人类按 Q1-Q4 拍板：弱 token 告警（倾向加）、token 打印提示（倾向保持+提示）、CORS/速率限制（倾向保持）、性能技术债（倾向另立任务）",
+    "确认后合并 feat/workspace-auth-ui → main；合并前代码冻结态再跑一次 go test -race + npm build 终检"
+  ]
+}

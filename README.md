@@ -18,7 +18,7 @@
 - **访问令牌鉴权**：服务启动时自动生成随机 Token（也可在配置文件中指定固定值），Web 端所有 API 均需携带令牌访问。
 - **路径访问限制**：支持 YAML 配置文件（`allowed_dirs`）限制 Web 端可访问的目录范围，防止越权切换或浏览服务器文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见。
-- **结构化导出**：支持导出为 **Markdown**、**JSON**、**XML**，仅包含被评论的文件与关键代码行，避免冗余 Token 消耗。
+- **结构化导出**：支持导出为 **Markdown**、**JSON**、**XML** 与自定义 **Template**，仅包含被评论的文件与关键代码行，避免冗余 Token 消耗。
 - **Review 持久化**：Review 数据自动保存到本地 JSON 文件，关闭服务后仍可恢复。
 - **单二进制部署**：前端通过 Go `embed` 直接打包进后端可执行文件，无需额外部署。
 
@@ -36,7 +36,7 @@
 
 ### 1. 构建
 
-确保已安装 **Go** 与 **Node.js / npm**。
+确保已安装 **Go**、**Node.js / npm** 与 **git ≥ 2.20**（diff 查询使用 `--end-of-options` 防选项注入）。
 
 ```bash
 cd web
@@ -126,9 +126,9 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 > `host` / `token` 请改用配置文件；`--review-file` / `--review-id` 的单文件存储模式已被按工作目录隔离存储取代（旧数据首次启动自动迁移）。
 
 > 数据存储规则：
-> - 每个工作目录对应独立数据区：`~/.wtf2pr/workspaces/<目录哈希>/`
-> - 当前 Review 默认存储为 `review.json`，新建的 Review 存储为 `review_{uuid}.json`，导出模板为 `export.tpl`
-> - 首次启动时会将旧版直接放在 `~/.wtf2pr/` 下的数据自动迁移到对应工作目录的数据区
+> - 每个工作目录对应独立数据区：`~/.wtf2pr/workspaces/<目录哈希>/`（目录与文件权限分别为 0700 / 0600）
+> - 当前 Review 默认存储为 `review.json`，新建的 Review 存储为 `review_{uuid}.json`，导出模板为 `export.tpl`，工作区元信息为 `workspace.json`
+> - 首次启动时会将旧版直接放在 `~/.wtf2pr/` 下的数据（review 文件与导出模板）自动迁移到对应工作目录的数据区
 
 ---
 
@@ -146,20 +146,22 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 ├── pkg/models/          # 前后端共享的结构体定义
 ├── web/                 # Vue 前端项目
 └── docs/
-    └── system_design.md # 系统设计文档
+    ├── system_design.md    # 系统设计文档
+    ├── unit_tests.md       # 单元测试清单
+    └── git-commit-rules.md # git 提交规范
 ```
 
 ---
 
 ## API 简介
 
-> 除静态页面外，所有 API 均需鉴权：`Authorization: Bearer <token>`（或 `?token=<token>` 查询参数）。
+> 除静态页面外，所有 API 均需鉴权：`Authorization: Bearer <token>`、`X-Auth-Token: <token>` 头或 `?token=<token>` 查询参数。
 
 - `GET /api/auth/check` — 校验访问令牌是否有效
 - `GET /api/diff?type=working` — 获取工作区未提交的 Diff
 - `GET /api/diff?type=commit&commit=<hash>` — 获取指定 Commit 的 Diff
 - `GET /api/workdir` — 获取当前工作目录与已知工作区列表
-- `POST /api/workdir` — 切换工作目录（`{"path": "/path/to/repo"}`，数据区随之切换）
+- `POST /api/workdir` — 切换工作目录（`{"path": "/path/to/repo"}`，数据区随之切换；目标必须是 git 仓库，否则返回 400）
 - `GET /api/fs/browse?path=<dir>` — 浏览服务器目录（用于工作目录选择）
 - `GET /api/review` — 获取当前 Review 数据
 - `POST /api/review` — 保存 Review 数据

@@ -7,15 +7,32 @@
 ## 执行方式
 
 ```bash
-# 运行全部测试
-go test ./...
+# 运行全部测试（含竞态检测）
+go test -race -count=1 ./internal/...
 
 # 运行指定包的测试并输出详情
+go test ./internal/config/ -v
 go test ./internal/git/ -v
 go test ./internal/review/ -v
 go test ./internal/export/ -v
 go test ./internal/server/ -v
 ```
+
+---
+
+## `internal/config`
+
+测试文件：`internal/config/config_test.go`
+
+| 测试函数 | 说明 |
+|----------|------|
+| `TestLoadMissingFile` | 配置文件不存在时返回 `nil, nil`（由调用方决定是否报错） |
+| `TestLoadValidConfig` | 验证 YAML 解析与 `allowed_dirs` 的 `~` 展开、绝对化 |
+| `TestLoadInvalidYAML` | 非法 YAML 返回错误 |
+| `TestIsAllowed` | 验证目录边界匹配（含 `root+"2"` 前缀误判用例） |
+| `TestIsAllowedEmptyList` | 允许列表为空时全部放行 |
+| `TestNormalizePathBoundaries` | 验证 `NormalizePath` 边界：空串报错、裸 `~`、相对路径、尾部斜杠、不存在目标的回退 |
+| `TestIsAllowedRootDir` | 允许列表包含根目录 `/` 时全部放行 |
 
 ---
 
@@ -39,7 +56,11 @@ go test ./internal/server/ -v
 | `TestReadUntrackedFileAsDiff_Text` | 验证未跟踪文本文件被构造为完整 `FileDiff`（新增模式） |
 | `TestReadUntrackedFileAsDiff_Binary` | 验证未跟踪二进制文件识别为 `IsBinary=true` |
 | `TestReadUntrackedFileAsDiff_NotFound` | 验证读取不存在的未跟踪文件返回错误 |
+| `TestReadUntrackedFileAsDiff_SymlinkSkipped` | 验证指向仓库外的符号链接被拒绝读取（防越界任意文件读） |
 | `TestGetUntrackedFiles` | 调用 `git ls-files` 接口，确保无 panic |
+| `TestValidateCommitRef` | 验证 commit 引用白名单：合法 rev（HEAD~3、分支、hash）放行，选项注入（`--output=` 等）拒绝 |
+| `TestGetCommitDiff_RejectsOptionInjection` | 验证选项注入不产生任意文件写 |
+| `TestCommitExists_RejectsInvalidRef` | 验证非法引用返回 false |
 
 ---
 
@@ -54,6 +75,7 @@ go test ./internal/server/ -v
 | `TestStoreFilePersistence` | 验证带文件路径的 Store 能将评论持久化到 JSON，并从 JSON 重新加载 |
 | `TestStoreClear` | 验证 `Clear` 清空内存与磁盘文件 |
 | `TestStoreSwitchFile` | 验证 `SwitchFile` 切换存储文件后自动加载该文件已有评论，且旧文件数据不受影响 |
+| `TestStoreEmptyNotWritten` | 验证空评论保存时删除文件而非写入空文件 |
 | `TestStoreConcurrency` | 高并发读写测试（100 协程），验证 `sync.RWMutex` 无线程安全问题 |
 
 ---
@@ -74,6 +96,7 @@ go test ./internal/server/ -v
 | `TestFindCodeContext_NotFound` | 验证不存在的行号返回空字符串 |
 | `TestFindCodeContext_InvalidLineKey` | 验证非法 `lineKey` 格式返回空字符串 |
 | `TestLineKeyToDisplay` | 验证 `lineKey` 空值显示为 `file`，非空保持原样 |
+| `TestRenderTemplate` | 验证 Go `text/template` 自定义模板导出 |
 
 ---
 
@@ -81,24 +104,62 @@ go test ./internal/server/ -v
 
 测试文件：`internal/server/server_test.go`
 
+**基础 API**
+
 | 测试函数 | 说明 |
 |----------|------|
-| `TestHandleGetConfig` | 验证 `GET /api/config` 返回当前 review 文件路径配置 |
-| `TestHandleGetReview` | 验证 `GET /api/review` 初始返回空数组 |
+| `TestHandleGetConfig` | 验证 `GET /api/config` 返回 reviewFile / reviewID / workDir |
+| `TestHandleGetReview` | 验证 `GET /api/review` 初始返回空评论列表 |
 | `TestHandleSaveReview` | 验证 `POST /api/review` 保存后，再次 GET 能正确取回 |
 | `TestHandleGetDiff_Working` | 在真实临时 Git 仓库中修改文件，验证 `GET /api/diff?type=working` 返回 diff 数据 |
 | `TestHandleGetCommits` | 在真实临时 Git 仓库中验证 `GET /api/commits` 返回分页 Commit 列表 |
-| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回所有历史 review 文件列表 |
-| `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID，创建空存储文件，并更新当前 review |
+| `TestHandleGetCommitsPageSizeCap` | 验证 `page_size` 超过上限时被收敛到 100 |
+| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回有评论的历史 review 列表 |
+| `TestHandleGetReviewsFiltersEmpty` | 向存储目录预置零评论与有评论文件，真实验证零评论被过滤 |
+| `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID 并切换当前 review（文件在首次非空保存时才落盘） |
 | `TestHandleSwitchReview` | 验证 `POST /api/review/switch` 能切换到历史 review 并加载其评论数据；不存在时返回 400 |
+| `TestHandleGetReviewDetail` | 验证 review 详情读取与不存在的 ID 返回 404 |
 | `TestHandleExport` | 验证 `POST /api/export` 返回指定格式的导出内容 |
+| `TestHandleExportMissingReviewID` | 验证显式指定不存在的 reviewID 返回 404（不静默回退当前 review） |
+| `TestHandleGetTemplate` / `TestHandleSaveTemplate` | 验证导出模板读取与保存 |
 
-> **说明**：`server` 测试使用真实 `git init` 创建的临时仓库，确保 API 与 Git 命令的集成链路完整可用。
+**鉴权与路径安全**
+
+| 测试函数 | 说明 |
+|----------|------|
+| `TestAuthMiddleware` | 验证无 token / 错误 token 返回 401，Bearer 与 `?token=` 正确放行 |
+| `TestXAuthTokenHeader` | 验证 `X-Auth-Token` 头鉴权路径 |
+| `TestReviewIDTraversalRejected` | 4 种路径遍历 ID × detail/switch/export 三入口均返回 400 |
+| `TestSymlinkEscapeRejected` | 允许目录内指向外部的符号链接，浏览与切换均 403 |
+| `TestBrowseDotDotAndTrailingSlash` | `..` 归一化后在范围内放行、越界拒绝 |
+
+**工作目录与存储隔离**
+
+| 测试函数 | 说明 |
+|----------|------|
+| `TestHandleSwitchWorkdir` | 验证切换 git 仓库成功、非 git 目录与不存在目录返回 400、存储目录按 workspace 隔离 |
+| `TestHandleGetWorkdir` | 验证返回当前 workDir 与 workspace 列表（含 current 标记） |
+| `TestWorkspaceDataIsolation` | 验证两个工作目录的评论数据互不可见 |
+| `TestHandleBrowse` | 验证目录浏览（隐藏目录与文件被过滤、parent 计算、无效路径 400） |
+| `TestRestrictedSwitchWorkdir` / `TestRestrictedBrowse` / `TestRestrictedWorkdirInfo` | 验证 allowed_dirs 受限模式下的放行/拒绝与信息标记 |
+| `TestWorkspaceIDStable` | 验证相对路径/符号链接与绝对路径产生相同 workspace ID |
+
+**数据迁移与并发**
+
+| 测试函数 | 说明 |
+|----------|------|
+| `TestLegacyDataMigration` | 验证旧版扁平 review.json 自动迁移到 workspace 并加载 |
+| `TestLegacyExportTemplateMigration` | 验证旧版 export.tpl 自动迁移到 workspace |
+| `TestMigrationSkipsNonToolFiles` | 验证非本工具命名的 `review*.json`（如 reviewbackup.json）不被迁移 |
+| `TestConcurrentSwitchAndSave` | `-race` 下并发切换 workdir 与保存，断言 review 文件不逃逸当前存储目录 |
+| `TestConcurrentSwitchReviewAndSave` | `-race` 下并发切换/新建 review 与保存，同上不变量 |
+
+> **说明**：`server` 测试使用真实 `git init` 创建的临时仓库，确保 API 与 Git 命令的集成链路完整可用；临时数据根目录通过包内注入与真实 `~/.wtf2pr` 隔离。
 
 ---
 
 ## 测试统计
 
-- **总测试包数**：4 个
-- **总测试函数**：约 30 个
-- **全部通过状态**：✅ `PASS`
+- **总测试包数**：5 个
+- **总测试函数**：77 个
+- **全部通过状态**：✅ `PASS`（`go test -race -count=1 ./internal/...`）
