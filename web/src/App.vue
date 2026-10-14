@@ -4,6 +4,7 @@
   <div v-else class="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col h-screen overflow-hidden">
     <AppHeader
       :saved="saved"
+      :saving="saving"
       :export-format="exportFormat"
       :review-label="reviewLabel"
       :work-dir="workDir"
@@ -162,6 +163,7 @@
               v-model="templateContent"
               class="flex-1 w-full border border-gray-300 dark:border-gray-700 rounded-lg p-3 text-sm font-mono bg-gray-50 dark:bg-gray-950 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
               placeholder="输入 Go text/template 模板..."
+              @input="templateDirty = true"
             />
           </div>
           <div class="lg:col-span-1 h-full overflow-y-auto border border-gray-200 dark:border-gray-800 rounded-xl p-4 bg-white dark:bg-gray-900 shadow-sm text-sm">
@@ -217,7 +219,7 @@ Message: {{.CommitInfo.Message}}
     <HelpModal v-if="showHelp" @close="showHelp = false" />
     <WorkdirModal
       v-if="showWorkdir"
-      :has-unsaved="isDirty"
+      :has-unsaved="hasUnsavedAll"
       @close="showWorkdir = false"
       @switched="onWorkdirSwitched"
       @unauthorized="authed = false; showWorkdir = false"
@@ -266,6 +268,7 @@ const exportResult = ref(null)
 const showHelp = ref(false)
 const showWorkdir = ref(false)
 const saved = ref(true)
+const saving = ref(false)
 const reviewLabel = ref('')
 const workDir = ref('')
 
@@ -276,6 +279,7 @@ const reviewList = ref([])
 
 const historyReviewData = ref(null)
 const templateContent = ref('')
+const templateDirty = ref(false)
 const switchingReview = ref('')
 
 function guardAuth(e) {
@@ -299,8 +303,10 @@ let diffSeq = 0
 // commit 列表加载序号：仅最新一次 loadCommits 生效
 let commitSeq = 0
 
-// 脏状态：有未保存的评论（统一判定，供确认拦截/头部徽标/beforeunload 使用）
+// 脏状态：有未保存的评论（统一判定，供确认拦截/头部徽标使用）
 const isDirty = computed(() => !saved.value && comments.value.length > 0)
+// 含模板草稿在内的全部未保存内容（供 workdir 切换确认与 beforeunload 拦截）
+const hasUnsavedAll = computed(() => isDirty.value || templateDirty.value)
 
 // 有未保存评论时请求用户确认
 function confirmDiscardIfDirty() {
@@ -317,6 +323,10 @@ function onTabClick(key) {
     // 用户已确认丢弃，评论与脏标记同步清理，避免后续误判未保存
     comments.value = []
     saved.value = true
+  }
+  if (activeTab.value === 'template' && templateDirty.value) {
+    if (!window.confirm('模板有未保存的修改，离开将丢失，确认继续？')) return
+    templateDirty.value = false
   }
   activeTab.value = key
 }
@@ -474,7 +484,7 @@ async function createNewReview() {
     const res = await apiNewReview()
     comments.value = []
     saved.value = true
-    reviewLabel.value = res.reviewID ? `Review ID: ${res.reviewID.substring(0, 8)}` : ''
+    reviewLabel.value = res.reviewID ? formatReviewLabel({ reviewID: res.reviewID }) : ''
     if (activeTab.value === 'history') {
       await loadReviews(epoch)
     }
@@ -490,12 +500,20 @@ async function saveReview() {
     alert('请先选择一个 Commit')
     return
   }
+  if (saving.value) return
+  saving.value = true
+  // 版本快照：响应到达时若评论已被继续编辑（数组引用变化），不得误标"已保存"
+  const snapshot = comments.value
   try {
-    await apiSaveReview(comments.value, 'commit', selectedCommitHash.value)
-    saved.value = true
+    await apiSaveReview(snapshot, 'commit', selectedCommitHash.value)
+    if (comments.value === snapshot) {
+      saved.value = true
+    }
   } catch (e) {
     if (guardAuth(e)) return
     alert('保存失败: ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -521,55 +539,60 @@ async function onSwitchHistoryReview(reviewItem) {
   if (switchingReview.value) return
   if (!confirmDiscardIfDirty()) return
   switchingReview.value = reviewItem.reviewID
-  let review
   try {
-    await apiSwitchReview(reviewItem.reviewID)
-    review = await getReview()
-  } catch (e) {
-    switchingReview.value = ''
-    if (guardAuth(e)) return
-    alert('切换 Review 失败: ' + e.message)
-    return
-  }
-  switchingReview.value = ''
-  // 两步 RPC 之间可能发生并发切换：以 reviewID 校验服务端当前 review 与目标一致，防止评论错位
-  const expectedID = reviewItem.reviewID === 'default' ? '' : reviewItem.reviewID
-  if ((review.reviewID || '') !== expectedID) {
-    alert('切换结果与预期不一致，请重试')
-    return
-  }
-  // 抑制双 watcher，显式按顺序加载，保证评论与 diff 一致落位
-  resetting++
-  epoch++
-  try {
-    selectedCommitHash.value = reviewItem.commit || ''
-    activeTab.value = 'commit'
-    reviewLabel.value = `Review ID: ${reviewItem.reviewID.substring(0, 8)}`
-    saved.value = true
-    comments.value = review.comments || []
-    if (commitList.value.length === 0) {
-      await loadCommits()
+    let review
+    try {
+      await apiSwitchReview(reviewItem.reviewID)
+      review = await getReview()
+    } catch (e) {
+      if (guardAuth(e)) return
+      alert('切换 Review 失败: ' + e.message)
+      return
     }
-    ensureCommitOption(selectedCommitHash.value, reviewItem.commitMsg)
-    if (selectedCommitHash.value) {
-      await loadDiff('commit', selectedCommitHash.value)
+    // 两步 RPC 之间可能发生并发切换：以 reviewID 校验服务端当前 review 与目标一致，防止评论错位
+    const expectedID = reviewItem.reviewID === 'default' ? '' : reviewItem.reviewID
+    if ((review.reviewID || '') !== expectedID) {
+      alert('切换结果与预期不一致，请重试')
+      return
+    }
+    // 抑制双 watcher，显式按顺序加载，保证评论与 diff 一致落位
+    resetting++
+    epoch++
+    try {
+      selectedCommitHash.value = reviewItem.commit || ''
+      activeTab.value = 'commit'
+      reviewLabel.value = formatReviewLabel({ reviewID: reviewItem.reviewID })
+      saved.value = true
+      comments.value = review.comments || []
+      if (commitList.value.length === 0) {
+        await loadCommits()
+      }
+      ensureCommitOption(selectedCommitHash.value, reviewItem.commitMsg)
+      if (selectedCommitHash.value) {
+        await loadDiff('commit', selectedCommitHash.value)
+      }
+    } finally {
+      resetting--
+      if (resetting === 0 && activeTab.value !== 'commit') {
+        // 窗口内被抑制的 tab 点击需要补偿加载
+        await loadTab(activeTab.value)
+      }
     }
   } finally {
-    resetting--
-    if (resetting === 0 && activeTab.value !== 'commit') {
-      // 窗口内被抑制的 tab 点击需要补偿加载
-      await loadTab(activeTab.value)
-    }
+    switchingReview.value = ''
   }
 }
 
 async function onViewHistoryReview(reviewItem) {
+  const e = epoch
   try {
     const detail = await getReviewDetail(reviewItem.reviewID)
+    // workdir 切换会使旧详情失效，不得跨切换弹出
+    if (stale(e)) return
     historyReviewData.value = detail
-  } catch (e) {
-    if (guardAuth(e)) return
-    alert('加载 Review 详情失败: ' + e.message)
+  } catch (err) {
+    if (guardAuth(err)) return
+    alert('加载 Review 详情失败: ' + err.message)
   }
 }
 
@@ -594,6 +617,7 @@ async function loadTemplate(e) {
     const res = await getTemplate()
     if (stale(e)) return
     templateContent.value = res.content || ''
+    templateDirty.value = false
   } catch (err) {
     if (guardAuth(err)) return
     if (stale(e)) return
@@ -604,6 +628,7 @@ async function loadTemplate(e) {
 async function onSaveTemplate() {
   try {
     await apiSaveTemplate(templateContent.value)
+    templateDirty.value = false
     alert('模板保存成功')
   } catch (e) {
     if (guardAuth(e)) return
@@ -623,6 +648,10 @@ function resetState() {
   reviewList.value = []
   reviewLabel.value = ''
   templateContent.value = ''
+  templateDirty.value = false
+  historyReviewData.value = null
+  showExport.value = false
+  exportResult.value = null
   saved.value = true
   error.value = ''
 }
@@ -660,20 +689,31 @@ async function initialize() {
   const e = ++epoch
   await loadDiff('working')
   // selectedCommitHash 的恢复由 loadTab('commit') 在进入 commit 页时统一处理
-  // getConfig 是全局数据（仅 workdir 切换会使其失效，而切换走重置窗口串行），不参与 epoch 守卫
   try {
     const cfg = await getConfig()
+    if (stale(e)) return
     workDir.value = cfg.workDir || workDir.value
-    if (cfg.reviewID) {
-      reviewLabel.value = `Review ID: ${cfg.reviewID.substring(0, 8)}`
-    } else if (cfg.reviewFile) {
-      reviewLabel.value = cfg.reviewFile === 'review.json' ? 'Review: default' : `Review: ${cfg.reviewFile}`
-    }
+    reviewLabel.value = formatReviewLabel(cfg)
   } catch (err) {
     if (guardAuth(err)) return
+    if (stale(e)) return
     reviewLabel.value = ''
   }
   await loadReviews(e)
+}
+
+// formatReviewLabel 生成头部 review 标识文案
+function formatReviewLabel(cfg) {
+  if (cfg.reviewID && cfg.reviewID !== 'default') {
+    return `Review ID: ${cfg.reviewID.substring(0, 8)}`
+  }
+  if (cfg.reviewID === 'default' || cfg.reviewFile === 'review.json') {
+    return 'Review: default'
+  }
+  if (cfg.reviewFile) {
+    return `Review: ${cfg.reviewFile}`
+  }
+  return ''
 }
 
 async function onAuthenticated() {
@@ -704,9 +744,9 @@ onMounted(async () => {
   }
 })
 
-// 有未保存评论时拦截页面关闭/刷新
+// 有未保存内容（评论或模板草稿）时拦截页面关闭/刷新
 function onBeforeUnload(e) {
-  if (isDirty.value) {
+  if (hasUnsavedAll.value) {
     e.preventDefault()
     e.returnValue = ''
   }

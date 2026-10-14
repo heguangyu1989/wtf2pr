@@ -22,7 +22,7 @@ func initGitRepo(t *testing.T) string {
 			t.Fatalf("failed to run git %v: %v", args, err)
 		}
 	}
-	run("init")
+	run("init", "-b", "master")
 	run("config", "user.email", "test@test.com")
 	run("config", "user.name", "Test User")
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0644); err != nil {
@@ -102,7 +102,7 @@ func TestGetUntrackedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x\n"), 0644); err != nil {
 		t.Fatalf("failed to write: %v", err)
 	}
-	files, err := getUntrackedFiles(dir)
+	files, _, err := getUntrackedFiles(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestGetUntrackedFilesReal(t *testing.T) {
 			t.Fatalf("failed to write %s: %v", name, err)
 		}
 	}
-	files, err := getUntrackedFiles(dir)
+	files, _, err := getUntrackedFiles(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -402,5 +402,165 @@ index 257cc56..5716ca5 100644
 	}
 	if files[0].NewFile != "hello world.txt" || files[0].OldFile != "hello world.txt" {
 		t.Errorf("spaced filename parsed wrong: old=%q new=%q", files[0].OldFile, files[0].NewFile)
+	}
+}
+
+func TestGpgProgramNotExecuted(t *testing.T) {
+	dir := initGitRepo(t)
+	marker := filepath.Join(t.TempDir(), "gpg-pwned.txt")
+	// 恶意仓库配置：log.showSignature 触发 gpg.program 执行；用脚本形式（touch 形式会被 git 追加的参数打断）
+	prog := filepath.Join(dir, "evil-gpg.sh")
+	if err := os.WriteFile(prog, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0755); err != nil {
+		t.Fatalf("failed to write evil program: %v", err)
+	}
+	cfg := "[log]\n\tshowSignature = true\n[gpg]\n\tprogram = " + prog + "\n"
+	f, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open git config: %v", err)
+	}
+	if _, err := f.WriteString(cfg); err != nil {
+		t.Fatalf("failed to write git config: %v", err)
+	}
+	f.Close()
+
+	// 伪造一个带 gpgsig 头的 commit 对象并指向 HEAD（未签名 commit 从不触发 gpg 调用）；
+	// 直接取现有 commit 原文注入签名头，避免手工拼装 author 格式
+	raw := string(mustGit(t, dir, "cat-file", "commit", "HEAD"))
+	sigBlock := "gpgsig -----BEGIN PGP SIGNATURE-----\n fake\n -----END PGP SIGNATURE-----\n"
+	idx := strings.Index(raw, "\n\n")
+	if idx < 0 {
+		t.Fatalf("unexpected commit object format")
+	}
+	commitContent := raw[:idx+1] + sigBlock + raw[idx+1:]
+	signedHash := strings.TrimSpace(string(mustGitStdin(t, dir, commitContent, "hash-object", "-t", "commit", "-w", "--stdin")))
+	mustGit(t, dir, "update-ref", "refs/heads/master", signedHash)
+
+	// 阳性对照：不带防护参数时恶意配置确实会触发（证明测试配置是活的）
+	direct := exec.Command("git", "-c", "log.showSignature=true", "log", "-1")
+	direct.Dir = dir
+	direct.Env = gitEnv()
+	_ = direct.Run()
+	if _, err := os.Stat(marker); err != nil {
+		t.Skipf("positive control failed: malicious config did not trigger marker: %v", err)
+	}
+	_ = os.Remove(marker)
+
+	// 经过本工具的调用必须不触发
+	if _, err := GetCommits(dir, models.CommitListRequest{Page: 1, PageSize: 10}); err != nil {
+		t.Fatalf("GetCommits failed: %v", err)
+	}
+	if _, err := getCommitDiff(dir, "HEAD"); err != nil {
+		t.Fatalf("getCommitDiff failed: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gpg.program hook should not be executed")
+	}
+}
+
+// mustGit 执行 git 命令并返回 stdout
+func mustGit(t *testing.T, dir string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+	return out
+}
+
+// mustGitStdin 带 stdin 执行 git 命令并返回 stdout
+func mustGitStdin(t *testing.T, dir, input string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+	return out
+}
+
+func TestParseDiffRenameSpacedFilename(t *testing.T) {
+	// 纯重命名无 --- / +++ 行，文件名应从 rename from/to 行获取
+	raw := `diff --git a/hello world.txt b/bye world.txt
+similarity index 100%
+rename from hello world.txt
+rename to bye world.txt
+`
+	files, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].OldFile != "hello world.txt" || files[0].NewFile != "bye world.txt" {
+		t.Errorf("rename with spaces parsed wrong: old=%q new=%q", files[0].OldFile, files[0].NewFile)
+	}
+}
+
+func TestMergeCommitDiff(t *testing.T) {
+	dir := initGitRepo(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	// 构造一个 merge commit
+	run("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feat.txt"), []byte("feat\n"), 0644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	run("add", ".")
+	run("commit", "-m", "feature commit")
+	run("checkout", "master")
+	run("merge", "--no-ff", "-m", "merge feature", "feature")
+
+	resp, err := getCommitDiff(dir, "HEAD")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Files) == 0 {
+		t.Errorf("merge commit diff should not be empty (expected -m --first-parent diff)")
+	}
+}
+
+func TestEmptyRepo(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	run("init", "-b", "master")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test User")
+	// 空仓库（零 commit）写入未跟踪文件
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	// working diff 应返回 untracked 部分而非 500
+	resp, err := getWorkingDiff(dir)
+	if err != nil {
+		t.Fatalf("expected working diff to work on empty repo, got %v", err)
+	}
+	if len(resp.Files) != 1 || resp.Files[0].NewFile != "new.txt" {
+		t.Errorf("expected untracked file in empty repo diff, got %+v", resp.Files)
+	}
+
+	// commits 列表应返回空而非 500
+	list, err := GetCommits(dir, models.CommitListRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("expected GetCommits to work on empty repo, got %v", err)
+	}
+	if list.Total != 0 || len(list.List) != 0 {
+		t.Errorf("expected empty commit list, got %+v", list)
 	}
 }

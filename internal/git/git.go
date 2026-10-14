@@ -2,6 +2,8 @@ package git
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
@@ -23,12 +26,17 @@ var maxUntrackedFileBytes = int64(1 << 20) // 1MB
 // maxUntrackedFiles 限制 working diff 中包含的未跟踪文件数量，超限截断（var 以便测试调小）
 var maxUntrackedFiles = 500
 
-// gitCmd 构造带环境净化的 git 命令：去除可劫持仓库定位或注入配置的 GIT_* 变量
-func gitCmd(workDir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+// gitCmdTimeout 限制单个 git 子进程执行时长，防止慢/挂起的仓库拖垮服务（var 以便测试调小）
+var gitCmdTimeout = 60 * time.Second
+
+// gitCmd 构造带环境净化与超时的 git 命令；调用方需在命令结束后调用返回的 cancel，
+// 需要区分超时强杀时通过返回的 ctx 检查 ctx.Err()
+func gitCmd(workDir string, args ...string) (*exec.Cmd, context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = workDir
 	cmd.Env = gitEnv()
-	return cmd
+	return cmd, ctx, cancel
 }
 
 // gitEnv 返回过滤后的进程环境
@@ -54,11 +62,14 @@ func gitEnv() []string {
 
 // runGitCapped 执行 git 命令并限制输出大小；超限截断到最后一个完整行并返回 truncated=true
 func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
-	cmd := gitCmd(workDir, args...)
+	cmd, ctx, cancel := gitCmd(workDir, args...)
+	defer cancel()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, false, err
 	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 	if err := cmd.Start(); err != nil {
 		return nil, false, err
 	}
@@ -69,6 +80,11 @@ func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
 		_, _ = io.Copy(io.Discard, stdout)
 	}
 	werr := cmd.Wait()
+	// 超时强杀必须视为失败，不能把残缺输出当截断的正常结果返回；
+	// 注意要查 ctx.Err() 而非 cmd.Err（后者仅是 LookPath 错误）
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, false, fmt.Errorf("git %s timed out: %w", strings.Join(args, " "), context.DeadlineExceeded)
+	}
 	if truncated {
 		// 截断到最后一个完整行，避免半截行进入解析器
 		if i := bytes.LastIndexByte(buf[:maxGitOutputBytes], '\n'); i >= 0 {
@@ -82,7 +98,7 @@ func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
 		return nil, false, rerr
 	}
 	if werr != nil {
-		return nil, false, fmt.Errorf("git %s failed: %w", strings.Join(args, " "), werr)
+		return nil, false, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), werr, strings.TrimSpace(stderrBuf.String()))
 	}
 	return buf, false, nil
 }
@@ -96,29 +112,44 @@ func GetDiff(workDir string, req models.DiffRequest) (*models.DiffResponse, erro
 }
 
 func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
-	// 1. 获取所有已跟踪文件的未提交变更（包含 staged + unstaged）
+	// 1. 获取所有已跟踪文件的未提交变更（包含 staged + unstaged）；空仓库（无 HEAD）无 tracked diff，仅返回 untracked
 	// --no-ext-diff/--no-textconv 防止恶意仓库配置注入命令；core.fsmonitor=false 避免 fsmonitor hook
-	out, truncated, err := runGitCapped(workDir, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "HEAD")
+	files := make([]models.FileDiff, 0)
+	truncated := false
+	head, err := hasHead(workDir)
 	if err != nil {
-		return nil, fmt.Errorf("git diff failed: %w", err)
+		return nil, fmt.Errorf("git rev-parse failed: %w", err)
 	}
-	files, err := ParseDiff(string(out))
-	if err != nil {
-		return nil, err
+	if head {
+		out, tr, err := runGitCapped(workDir, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "HEAD")
+		if err != nil {
+			return nil, fmt.Errorf("git diff failed: %w", err)
+		}
+		truncated = tr
+		files, err = ParseDiff(string(out))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. 补充尚未被 git 跟踪的 untracked 文件（数量与单文件大小均有限制）
-	untracked, _ := getUntrackedFiles(workDir)
-	for i, f := range untracked {
-		if i >= maxUntrackedFiles {
+	untracked, listingTruncated, err := getUntrackedFiles(workDir)
+	if err == nil {
+		if listingTruncated {
 			truncated = true
-			break
 		}
-		fd, err := readUntrackedFileAsDiff(workDir, f)
-		if err == nil {
-			files = append(files, fd)
+		for i, f := range untracked {
+			if i >= maxUntrackedFiles {
+				truncated = true
+				break
+			}
+			fd, err := readUntrackedFileAsDiff(workDir, f)
+			if err == nil {
+				files = append(files, fd)
+			}
 		}
 	}
+	// getUntrackedFiles 失败时按 best-effort 处理：已跟踪部分的 diff 仍然可用，不整体报错
 
 	return &models.DiffResponse{
 		Type:      models.DiffTypeWorking,
@@ -127,13 +158,27 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 	}, nil
 }
 
+// hasHead 检查仓库是否存在 HEAD；明确的 git 层失败（如无 HEAD/非仓库）返回 (false, nil)，执行异常（超时等）返回错误
+func hasHead(workDir string) (bool, error) {
+	cmd, _, cancel := gitCmd(workDir, "rev-parse", "--verify", "HEAD")
+	defer cancel()
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return false, nil
+	}
+	return false, err
+}
+
 func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 	if err := validateCommitRef(commit); err != nil {
 		return nil, err
 	}
-	// 获取 commit 信息（--end-of-options 防止选项注入）
-	infoCmd := gitCmd(workDir, "show", "-s", "--format=%H%n%an%n%ad%n%s", "--end-of-options", commit)
-	infoOut, err := infoCmd.Output()
+	// 获取 commit 信息（--end-of-options 防止选项注入；-c log.showSignature=false 防 gpg.program 钩子执行；输出经 cap 防巨行 subject）
+	infoOut, _, err := runGitCapped(workDir, "-c", "log.showSignature=false", "show", "-s", "--format=%H%n%an%n%ad%n%s", "--end-of-options", commit)
 	if err != nil {
 		return nil, fmt.Errorf("git show info failed: %w", err)
 	}
@@ -146,8 +191,9 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 		commitInfo.Message = strings.Join(infoLines[3:], "\n")
 	}
 
-	// 获取 diff（选项需在 --end-of-options 之前；--no-ext-diff/--no-textconv 防止仓库配置注入命令）
-	diffOut, truncated, err := runGitCapped(workDir, "-c", "core.quotePath=false", "show", "--no-ext-diff", "--no-textconv", "--format=", "-p", "--end-of-options", commit)
+	// 获取 diff（选项需在 --end-of-options 之前；--no-ext-diff/--no-textconv 防止仓库配置注入命令；
+	// -m --first-parent 使 merge commit 展示与第一父的差异而非空白）
+	diffOut, truncated, err := runGitCapped(workDir, "-c", "core.quotePath=false", "-c", "log.showSignature=false", "show", "--no-ext-diff", "--no-textconv", "-m", "--first-parent", "--format=", "-p", "--end-of-options", commit)
 	if err != nil {
 		return nil, fmt.Errorf("git show diff failed: %w", err)
 	}
@@ -164,7 +210,7 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 	}, nil
 }
 
-// GetCommits 获取分页的 git log
+// GetCommits 获取分页的 git log；空仓库（无 HEAD）返回空列表
 func GetCommits(workDir string, req models.CommitListRequest) (*models.CommitListResponse, error) {
 	if req.Page < 1 {
 		req.Page = 1
@@ -172,22 +218,31 @@ func GetCommits(workDir string, req models.CommitListRequest) (*models.CommitLis
 	if req.PageSize < 1 {
 		req.PageSize = 10
 	}
+	head, err := hasHead(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("git rev-parse failed: %w", err)
+	}
+	if !head {
+		return &models.CommitListResponse{List: []models.CommitLog{}, Total: 0, Page: req.Page, PageSize: req.PageSize, TotalPages: 0}, nil
+	}
 
 	// 先获取总数
-	countOut, err := gitCmd(workDir, "rev-list", "--count", "HEAD").Output()
+	countCmd, _, countCancel := gitCmd(workDir, "rev-list", "--count", "HEAD")
+	defer countCancel()
+	countOut, err := countCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git rev-list count failed: %w", err)
 	}
 	total, _ := strconv.Atoi(strings.TrimSpace(string(countOut)))
 
-	// 获取当前页数据
+	// 获取当前页数据（-c log.showSignature=false 防 gpg.program 钩子执行；输出经 cap 防巨行 author/subject）
 	skip := (req.Page - 1) * req.PageSize
-	logOut, err := gitCmd(workDir, "log", "--pretty=format:%H%x00%an%x00%ad%x00%s", "--skip", strconv.Itoa(skip), "-n", strconv.Itoa(req.PageSize)).Output()
+	logOut, _, err := runGitCapped(workDir, "-c", "log.showSignature=false", "log", "--pretty=format:%H%x00%an%x00%ad%x00%s", "--skip", strconv.Itoa(skip), "-n", strconv.Itoa(req.PageSize))
 	if err != nil {
 		return nil, fmt.Errorf("git log failed: %w", err)
 	}
 
-	var list []models.CommitLog
+	list := []models.CommitLog{}
 	if len(logOut) > 0 {
 		entries := strings.Split(strings.TrimSpace(string(logOut)), "\n")
 		for _, entry := range entries {
@@ -217,11 +272,11 @@ func GetCommits(workDir string, req models.CommitListRequest) (*models.CommitLis
 	}, nil
 }
 
-// getUntrackedFiles 列出未跟踪文件（-z 按 NUL 分割避免空格/非 ASCII 文件名错位；core.quotePath=false 禁止转义）
-func getUntrackedFiles(workDir string) ([]string, error) {
-	out, err := gitCmd(workDir, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "ls-files", "--others", "--exclude-standard", "-z").Output()
+// getUntrackedFiles 列出未跟踪文件（-z 按 NUL 分割避免空格/非 ASCII 文件名错位；core.quotePath=false 禁止转义；输出经 cap 防海量路径撑爆内存）
+func getUntrackedFiles(workDir string) ([]string, bool, error) {
+	out, truncated, err := runGitCapped(workDir, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	parts := strings.Split(string(out), "\x00")
 	files := parts[:0]
@@ -230,7 +285,7 @@ func getUntrackedFiles(workDir string) ([]string, error) {
 			files = append(files, p)
 		}
 	}
-	return files, nil
+	return files, truncated, nil
 }
 
 // CommitsExist 批量检查多个 commit 是否存在（单次 git cat-file --batch-check 调用，避免 N+1 子进程）
@@ -248,7 +303,8 @@ func CommitsExist(workDir string, hashes []string) map[string]bool {
 	if len(valid) == 0 {
 		return result
 	}
-	cmd := gitCmd(workDir, "cat-file", "--batch-check")
+	cmd, _, cancel := gitCmd(workDir, "cat-file", "--batch-check")
+	defer cancel()
 	cmd.Stdin = strings.NewReader(strings.Join(valid, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
@@ -281,7 +337,9 @@ func validateCommitRef(commit string) error {
 
 // IsGitRepo 检查指定目录是否位于一个 git 仓库中
 func IsGitRepo(workDir string) bool {
-	out, err := gitCmd(workDir, "rev-parse", "--is-inside-work-tree").Output()
+	cmd, _, cancel := gitCmd(workDir, "rev-parse", "--is-inside-work-tree")
+	defer cancel()
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}

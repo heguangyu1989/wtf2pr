@@ -71,20 +71,25 @@ func TestStoreFilePersistence(t *testing.T) {
 	}
 }
 
-func TestStoreClear(t *testing.T) {
+func TestStoreSaveEmptyDeletesFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "review.json")
 	s := NewStore(file)
-	s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "1", Content: "c1"}}})
-	s.Clear()
+	if err := s.Save(&models.PersistedReview{Comments: []models.Comment{{ID: "1", Content: "c1"}}}); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	// 保存空评论应清空内存并删除文件
+	if err := s.Save(&models.PersistedReview{Comments: []models.Comment{}}); err != nil {
+		t.Fatalf("save empty failed: %v", err)
+	}
 	got := s.Get()
 	if len(got) != 0 {
-		t.Errorf("expected empty after clear")
+		t.Errorf("expected empty after save empty")
 	}
 	// Verify file cleared too
 	s2 := NewStore(file)
 	if len(s2.Get()) != 0 {
-		t.Errorf("expected empty file after clear")
+		t.Errorf("expected empty file after save empty")
 	}
 }
 

@@ -203,7 +203,7 @@ async function onSelect(path) {
 onMounted(async () => {
   try {
     const info = await getWorkdir()
-    workspaces.value = (info.workspaces || []).filter(ws => !info.restricted || (info.allowedDirs || []).some(dir => ws.path === dir || ws.path.startsWith(dir + '/')))
+    workspaces.value = (info.workspaces || []).filter(ws => !info.restricted || (info.allowedDirs || []).some(dir => ws.path === dir || dir === '/' || ws.path.startsWith(dir + '/')))
     allowedDirs.value = info.allowedDirs || []
     restricted.value = !!info.restricted
     currentWorkdir.value = info.workDir || ''

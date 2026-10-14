@@ -32,7 +32,7 @@
         <DiffViewer
           v-if="hasDiff"
           :diff-data="data.diff"
-          :comments="data.comments"
+          :comments="data.comments || []"
           :readonly="true"
           :commit-info="data.diff?.commitInfo"
         />

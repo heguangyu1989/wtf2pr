@@ -192,15 +192,6 @@ func TestFindCodeContext_InvalidLineKey(t *testing.T) {
 	}
 }
 
-func TestLineKeyToDisplay(t *testing.T) {
-	if lineKeyToDisplay("") != "file" {
-		t.Errorf("expected 'file' for empty key")
-	}
-	if lineKeyToDisplay("new:5") != "new:5" {
-		t.Errorf("expected 'new:5'")
-	}
-}
-
 func TestRenderTemplate(t *testing.T) {
 	diff := makeDiff()
 	comments := []models.Comment{

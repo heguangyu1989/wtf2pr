@@ -1,0 +1,85 @@
+{
+  "review": {
+    "id": "R3-20261014",
+    "title": "wtf2pr feat/workspace-auth-ui 全面 Review R3（收敛轮）",
+    "date": "2026-10-14",
+    "machine": "开发机",
+    "method": "5 路 fresh-eyes（正确性/简洁性/安全性能/前端全维度/契约一致性）+ 主 agent 综合判别 + 2 路修复后复查",
+    "task": "wtf2pr-workspace-auth-ui",
+    "ts": "202610140952",
+    "report_path": "docs/reviews/2026-10-13-wtf2pr-full-review/R3-20261014.html",
+    "projects": ["wtf2pr"],
+    "scopes": [
+      {"repo": "wtf2pr", "base": "main", "branch": "feat/workspace-auth-ui", "stat": "32 文件 +3451/-463（6 commits）+ 修复 18 文件", "commits": "81e8d56/32565ba/0970533/ee87518/3165ff5/1aec4ed"}
+    ],
+    "out_of_scope": "无",
+    "verdict": "R3 捕获 1 个 Critical（gpg.program + log.showSignature 恶意仓库 RCE，与已封堵的 textconv 同威胁模型的漏网向量）与 git 子进程零超时写者饥饿、非 diff 输出无界、空仓库/merge commit 语义缺陷、saveReview 版本守卫缺失等问题；修复后复查二次捕获 3 项（超时检测死代码、gpg 测试空转、show -s 漏改）并闭环。99 个测试 -race 全绿，问题曲线收敛（R1 6C → R2 1C → R3 1C/复查 0C），当前形态可合并。",
+    "verdict_level": "ok"
+  },
+  "summary_rows": [
+    {"cells": ["wtf2pr（5 路 + 2 路复查）", "3（已全部修复）", "3（已记录）", "16（14 修/2 保持）", "✓ 可合并"]}
+  ],
+  "confirmations": [
+    {"id": "Q1", "title": "git 子进程超时阈值 60s（gitCmdTimeout）", "background": "R3 安全角度实证慢/挂起的 git + save 持 RLock 会冻结全部 API；已按 60s 实施，超时强杀视为错误（不返回截断数据）", "options": "已实施 60s；如需调整阈值或按命令类型分级告知即可", "status": "decided"},
+    {"id": "Q2", "title": "空仓库（无 HEAD）语义：working diff 仅返回 untracked、commits 返回空列表", "background": "此前为空仓库整体 500；本分支新增的 untracked 展示恰好面向'未提交工作'场景，空仓库是其最典型的用例", "options": "已按此语义实施；如需'空仓库提示用户先提交'的交互可后续加", "status": "decided"},
+    {"id": "Q3", "title": "非 git 工作目录下 working diff/commits 由 500 变为返回空数据", "background": "hasHead 以 ExitError 判定'无 HEAD'，非仓库目录同享该路径；实际上 workdir 切换入口已强制 git 仓库校验，此路径仅防御", "options": "接受（防御路径行为更宽容）；如需严格 400 可在 handleGetDiff 加 IsGitRepo 前置", "status": "accepted"}
+  ],
+  "findings": [
+    {"id": "1", "level": "critical", "location": "internal/git/git.go:185,135,150", "title": "gpg.program + log.showSignature 恶意仓库 RCE（log/show 三条调用全中招）", "evidence": "实证：.git/config 写入 log.showSignature=true + 恶意 gpg.program 后 git log/show 均执行（marker 生成）；与已封堵的 textconv 同威胁模型", "fix": "全部 log/show 调用加 -c log.showSignature=false；TestGpgProgramNotExecuted 含脚本版 program + 伪造签名 commit + 阳性对照", "status": "fixed"},
+    {"id": "2", "level": "important", "location": "internal/git/git.go:27-32; internal/server/server.go:592", "title": "git 子进程零超时 + save 持 RLock 跨子进程 → RWMutex 写者饥饿全 API 冻结", "evidence": "实证：假 git 睡 10s，纯读接口被拖慢 13000 倍；挂起则永久 wedge + goroutine/进程泄漏", "fix": "gitCmd 统一 60s context 超时；超时强杀经 ctx.Err() 检测视为错误（不返回截断数据）", "status": "fixed"},
+    {"id": "3", "level": "important", "location": "internal/git/git.go:83（复查捕获）", "title": "超时检测死代码：os/exec 的 cmd.Err 仅是 LookPath 错误，context 超时被杀时恒为 nil", "evidence": "实证同构复制：timeout+输出>cap 时 truncated=true err=nil 静默返回残缺数据", "fix": "gitCmd 返回 ctx，Wait 后检查 ctx.Err() 是否 DeadlineExceeded", "status": "fixed"},
+    {"id": "4", "level": "important", "location": "internal/git/git_test.go:408（复查捕获）", "title": "TestGpgProgramNotExecuted 空转：未签名 commit 从不调用 gpg，touch 形式 program 被 git 追加参数打断", "evidence": "复查实证：有无防护参数该测试都通过；伪造签名 commit + 脚本 program 才真实触发", "fix": "测试改为脚本 program + cat-file 原文注入 gpgsig 头伪造签名 commit + 阳性对照（裸 git 无防护应生成 marker）", "status": "fixed"},
+    {"id": "5", "level": "important", "location": "internal/git/git.go:167（复查捕获）", "title": "show -s 漏改 runGitCapped，commit message 巨行可无界读入内存", "evidence": "非 diff 输出无界修复的遗漏点", "fix": "infoCmd 改走 runGitCapped", "status": "fixed"},
+    {"id": "6", "level": "important", "location": "internal/git/git.go:222,135,185", "title": "非 diff 类 git 输出无界：ls-files 海量路径、show -s 巨行 subject、git log 巨行 author", "evidence": "20MB cap 只罩 diff 类命令", "fix": "三处统一改走 runGitCapped", "status": "fixed"},
+    {"id": "7", "level": "important", "location": "internal/git/git.go:101-104,168", "title": "空仓库（零 commit）working diff 与 commits 整体 500，恰好杀死新功能最典型的使用场景", "evidence": "git diff HEAD / rev-list --count HEAD 在无 HEAD 仓库 exit 128", "fix": "hasHead（ExitError 区分无 HEAD 与执行异常）；空仓库 untracked-only + 空列表；TestEmptyRepo", "status": "fixed"},
+    {"id": "8", "level": "important", "location": "internal/git/parser.go:30-34", "title": "纯重命名/纯 mode 变更含空格文件名错位（无 ---/+++ 行兜底）", "evidence": "实证 rename from/to 行被忽略，SplitN 头解析错位", "fix": "parser 解析 rename from/to 与 copy from/to；TestParseDiffRenameSpacedFilename", "status": "fixed"},
+    {"id": "9", "level": "important", "location": "internal/git/git.go:150", "title": "merge commit 的 diff 静默为空（git show -p 对 merge 默认无输出）", "evidence": "实证；commit 列表包含 merge，用户点选看到零文件变更无提示", "fix": "show -p 加 -m --first-parent；TestMergeCommitDiff；initGitRepo 固定 -b master 防环境差异", "status": "fixed"},
+    {"id": "10", "level": "important", "location": "web/src/App.vue:487-500", "title": "saveReview 无版本守卫：在途期间新增评论被陈旧响应误标'已保存'，脏标记失效可致静默丢失", "evidence": "payload 快照与 saved=true 无条件回写之间存在编辑窗口", "fix": "snapshot 数组引用比较（全仓评论更新恒为不可变替换）+ saving 重入锁与按钮禁用", "status": "fixed"},
+    {"id": "11", "level": "important", "location": "web/src/components/DiffViewer.vue:82-87", "title": "DiffFile 编辑草稿不随文件切换隔离，评论可错挂到非起草文件", "evidence": "组件实例复用，editing 状态跨文件滞留，submitComment 以当前文件路径写入", "fix": ":key=文件路径强制重建实例", "status": "fixed"},
+    {"id": "12", "level": "important", "location": "internal/review/store.go:116; internal/server/server.go:307", "title": "Store.Clear 测试专用导出方法；readReviewByIDLocked 命名与 Locked 持锁惯例相反", "evidence": "生产零调用；同名后缀两种契约，未来嵌套 RLock 死锁隐患", "fix": "删除 Clear（测试改用 Save 空评论）；改名 readReviewByID", "status": "fixed"},
+    {"id": "13", "level": "important", "location": "internal/server/server.go:798-804,546-549,658-724", "title": "导出损坏 review 静默张冠李戴；/api/review 全量内嵌 diff 重复传输；历史列表无排序", "evidence": "解析失败静默回退当前 review；前端仅消费 5 个字段却每次拉回 ≤20MB diff；ReadDir 文件名序即随机序", "fix": "损坏返回 500（legacy []Comment 兜底可读）；剥离 diff 仅保留 commitInfo；updatedAt 倒序+ReviewID 稳定次序", "status": "fixed"},
+    {"id": "14", "level": "important", "location": "web/src/App.vue:534,615-628,566-574; web/src/components/WorkdirModal.vue:206", "title": "前端一组状态一致性：switchingReview 释放过早、resetState 不清模态态、initialize getConfig 无 stale、WorkdirModal 过滤无根目录特判", "evidence": "两道切换流程可交错致 UI/服务器错位；陈旧详情跨 workdir 弹出；allowed_dirs:[/] 时最近列表被错误清空", "fix": "锁覆盖整个加载阶段；模态态纳入重置；stale 守卫补齐；dir==='/' 放行（与后端同口径）", "status": "fixed"},
+    {"id": "15", "level": "important", "location": "web/src/components/WorkdirModal.vue:206 vs internal/config/config.go:89", "title": "allowed_dirs 边界匹配第三份实现且语义漂移（前端过滤缺根目录特判）", "evidence": "同一谓词两处实现修复不同步的实证", "fix": "前端补 dir==='/' 特判与后端 IsAllowed 同口径", "status": "fixed"}
+  ],
+  "suggestions": [
+    {"group": "wtf2pr（已修复）", "items": [
+      {"id": "S1", "location": "internal/server/server.go; internal/export/export.go; pkg/models/models.go", "text": "简洁性一揽子：getTimestamp/lineKeyToDisplay/parseDiffLine 死分支内联删除；PageSize 双 tag 对齐；inferReviewType 抽取；模板 block 错误消息补全", "status": "fixed"},
+      {"id": "S2", "location": "internal/server/server.go:525,74-77", "text": "GetCommits page 上限 1e6（防 skip 溢出）；dataRoot 预存 0755 权限启动时收紧 0700", "status": "fixed"},
+      {"id": "S3", "location": "web/src", "text": "模板草稿保护（templateDirty+离开确认+hasUnsavedAll 并入 workdir 切换与 beforeunload）；ReviewResultModal comments||[]；TokenGate onMounted focus；formatReviewLabel 收口且 default 风格统一", "status": "fixed"},
+      {"id": "S4", "location": "internal/git/git.go:156-160", "text": "hasHead 区分'明确无 HEAD'（ExitError）与执行异常（超时），挂起仓库不再被误呈现为空仓库", "status": "fixed"},
+      {"id": "S5", "location": "docs", "text": "block 三处文档补全；README 迁移时机措辞；unit_tests.md 99 个测试实名同步（含 TestStoreSaveEmptyDeletesFile 改名、TestLineKeyToDisplay 移除）", "status": "fixed"}
+    ]},
+    {"group": "wtf2pr（保持现状）", "items": [
+      {"id": "S6", "location": "internal/server/server.go:512-517 vs internal/git/git.go:200-205", "text": "分页默认值 handler 与 git 层双归一化：git 层是除零保护（PageSize=0 会 panic），导出面防御保留", "status": "accepted"},
+      {"id": "S7", "location": "internal/server/server.go:469; web/src/components/WorkdirModal.vue:89", "text": "魔数 500 三处（后端 maxEntries/前端文案/文档）：接受现状，改阈值时需同步", "status": "accepted"}
+    ]}
+  ],
+  "decisions": [
+    {"topic": "R1/R2 全部已定决策", "source": "R1-20261013/R2-20261013 报告", "note": "本轮无重报"},
+    {"topic": "git 子进程 60s 超时阈值", "source": "R3 Q1", "note": "已实施，超时强杀视为错误"},
+    {"topic": "空仓库语义", "source": "R3 Q2", "note": "working diff 仅 untracked、commits 空列表"},
+    {"topic": "非 git 目录 diff/commits 返回空数据", "source": "R3 Q3", "note": "防御路径，入口已有 git 仓库校验"},
+    {"topic": "?token= 查询参数通道去留", "source": "R3 安全角度提出", "note": "URL bootstrap 的实际使用通道（启动日志带 token 链接），保留；泄漏面已在文档标注"},
+    {"topic": "CORS * 去留", "source": "R3 安全角度提出", "note": "同源部署+vite 代理下无功能需求，但当前面向 curl/脚本调用方，保持现状（token 为唯一屏障，R1 人类已决策）"}
+  ],
+  "strengths": [
+    "gpg 测试含阳性对照：先证明恶意配置在裸 git 下确实触发，再断言本工具调用不触发——安全回归测试的正确形态",
+    "快照引用比较利用既有不变量（全仓评论更新恒为不可变替换）而非引入新约束，锁（防双提交）与快照（防误标）职责分离",
+    "超时检测修复准确命中 Go os/exec 的语义陷阱（cmd.Err 仅 LookPath 错误），注释写明为何要查 ctx.Err()",
+    "问题曲线收敛：R1 6 Critical → R2 1 → R3 1（复查 0），每轮修复引入的回归都被下一轮复查实证捕获",
+    "unit_tests.md 99 个测试函数与实现完全同名同数，连测试描述到实现细节级别都准确"
+  ],
+  "verifications": [
+    {"who": "正确性角度", "what": "go build/vet/gofmt + go test -race -count=1 ./internal/... + 4 组沙箱实证（RCE/merge/重命名/空仓库）", "result": "全部通过；4 项发现均实证"},
+    {"who": "安全角度", "what": "假 git 睡 10s 实证写者饥饿；非 diff 输出无界审查；token/CORS 链路追踪", "result": "写者饥饿实证（纯读接口慢 13000 倍）"},
+    {"who": "修复后复查（后端）", "what": "12 组修复逐条核验 + 超时检测实证 + gpg 测试有效性实证 + -m --first-parent 普通 commit 输出比对", "result": "捕获超时检测死代码、gpg 测试空转、show -s 漏改 3 项，均已返修闭合"},
+    {"who": "修复后复查（前端）", "what": "10 项修复逐条核验 + snapshot 引用语义/锁嵌套推演", "result": "10/10 闭合；templateDirty 保护面残留已并入 hasUnsavedAll"},
+    {"who": "契约角度", "what": "unit_tests.md 逐名核对 + 文档与代码契约比对", "result": "93→99 实名同步；block 文档缺项等 4 处已回写"},
+    {"who": "主 agent", "what": "e2e：gpg marker 未创建且 commits 正常、merge commit diff 非空、空仓库 diff/commits 200、全量 -race + lint + build", "result": "全部符合预期（99 测试 PASS）"}
+  ],
+  "notes": "R3 的 Critical 是 R2 RCE 封堵的漏网向量（gpg.program 经 log.showSignature 触发）；复查又实证其中 2 项修复不达标（死代码检测、空转测试）并返修——多轮复查机制对'修复声明要防的场景是否真闭合'的校验持续兑现价值。",
+  "next_steps": [
+    "合并 feat/workspace-auth-ui → main；合并前代码冻结态终检（go test -race + npm build）",
+    "可选后续：CORS 收紧（如引入 cookie 凭证时必修）；review 元数据与 diff 快照分文件存储（历史量大后）；'空仓库请先提交'引导交互"
+  ]
+}

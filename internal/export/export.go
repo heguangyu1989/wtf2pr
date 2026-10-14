@@ -87,9 +87,14 @@ func BuildReviewExport(diff *models.DiffResponse, comments []models.Comment) *Re
 		}
 		for _, c := range cmts {
 			codeLine, hunkHeader := findCodeContext(file, c.LineKey)
+			// 文件级评论无行号时以 "file" 标识
+			lineNo := c.LineKey
+			if lineNo == "" {
+				lineNo = "file"
+			}
 			fre.Comments = append(fre.Comments, CommentExport{
 				LineKey:    c.LineKey,
-				LineNo:     lineKeyToDisplay(c.LineKey),
+				LineNo:     lineNo,
 				Content:    c.Content,
 				CodeLine:   codeLine,
 				HunkHeader: hunkHeader,
@@ -121,10 +126,10 @@ func RenderTemplate(diff *models.DiffResponse, comments []models.Comment, tplCon
 // forbiddenTemplateAction 匹配 define/template/block 动作（含空白与修剪标记变体；block 同样可递归）
 var forbiddenTemplateAction = regexp.MustCompile(`\{\{-?\s*(define|template|block)\b`)
 
-// ValidateTemplate 校验模板安全性：禁止 define/template 动作（递归模板可使进程栈溢出崩溃且不可恢复）
+// ValidateTemplate 校验模板安全性：禁止 define/template/block 动作（递归模板可使进程栈溢出崩溃且不可恢复）
 func ValidateTemplate(tplContent string) error {
 	if forbiddenTemplateAction.MatchString(tplContent) {
-		return fmt.Errorf("template actions {{define}}/{{template}} are not allowed")
+		return fmt.Errorf("template actions {{define}}/{{template}}/{{block}} are not allowed")
 	}
 	return nil
 }
@@ -158,13 +163,6 @@ func findCodeContext(file models.FileDiff, lineKey string) (codeLine, hunkHeader
 		}
 	}
 	return "", ""
-}
-
-func lineKeyToDisplay(lineKey string) string {
-	if lineKey == "" {
-		return "file"
-	}
-	return lineKey
 }
 
 func exportMarkdown(data *ReviewExport) string {

@@ -53,7 +53,9 @@ func (s *Store) Save(persisted *models.PersistedReview) error {
 		return nil
 	}
 	if len(persisted.Comments) == 0 {
-		_ = os.Remove(s.filePath)
+		if err := os.Remove(s.filePath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		return nil
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")
@@ -110,9 +112,4 @@ func (s *Store) SwitchFile(filePath string) {
 			s.loadData(data)
 		}
 	}
-}
-
-// Clear 清空评论并删除文件
-func (s *Store) Clear() {
-	s.Save(&models.PersistedReview{Comments: []models.Comment{}})
 }

@@ -27,8 +27,8 @@ type CommitLog struct {
 
 // CommitListRequest 请求 git log 列表
 type CommitListRequest struct {
-	Page     int `json:"page" form:"page"`
-	PageSize int `json:"pageSize" form:"page_size"`
+	Page     int `form:"page"`
+	PageSize int `form:"page_size"`
 }
 
 // CommitListResponse git log 列表响应

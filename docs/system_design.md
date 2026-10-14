@@ -45,7 +45,8 @@
   - 执行 `git log` + `git rev-list --count` 实现分页 Commit 列表查询（`page_size` 上限 100）。
   - 内置 Unified Diff 解析器，将 diff 文本解析为结构化数据（文件 → Hunk → 行；文件名以 `--- `/`+++ ` 行为准，支持含空格文件名）。
   - diff 类输出（`git diff HEAD` / `git show -p`）经 `runGitCapped` 限制在 20MB（超限排空管道后截断并标记 `DiffResponse.Truncated`）。
-  - 安全基线：commit 引用白名单校验 + `--end-of-options` 防选项注入；`--no-ext-diff --no-textconv` + 禁用 fsmonitor hook 防恶意仓库配置执行命令；`core.quotePath=false` 防文件名转义错位；git 子进程环境变量白名单过滤（去除 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG*` 等劫持向量）；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
+  - 安全基线：commit 引用白名单校验 + `--end-of-options` 防选项注入；`--no-ext-diff --no-textconv` + 禁用 fsmonitor hook + `-c log.showSignature=false` 防恶意仓库配置执行命令（textconv / ext-diff / gpg.program）；`core.quotePath=false` 防文件名转义错位；git 子进程环境变量白名单过滤（去除 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG*` 等劫持向量）；单个子进程 60s 超时（`gitCmdTimeout`）；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
+  - merge commit 经 `-m --first-parent` 展示与第一父的差异；空仓库（无 HEAD）working diff 仅返回 untracked、commits 返回空列表。
 - **Review 模块**：
   - 内存存储 + JSON 文件持久化（临时文件 + 原子替换，权限 0600），线程安全（`sync.RWMutex`）。
   - 支持 `SwitchFile` 动态切换存储文件，切换时自动加载该文件已有评论。
@@ -59,7 +60,7 @@
   - 提供 RESTful API（`/api/auth/check`、`/api/diff`、`/api/commits`、`/api/config`、`/api/review`、`/api/review/detail`、`/api/reviews`、`/api/review/new`、`/api/review/switch`、`/api/export`、`/api/template`、`/api/workdir`、`/api/fs/browse`）。
   - 所有 API 经 token 鉴权中间件（常量时间比较）；review ID 经白名单校验，防止路径遍历越出存储目录。
   - 请求体上限 10MB；HTTP 服务器配置 ReadHeader/Read/Write/Idle 超时。
-  - 自定义导出模板经安全校验（禁止 `{{define}}/{{template}}` 递归动作），模板文件与 review 数据落盘均为原子写 + 0600。
+  - 自定义导出模板经安全校验（禁止 `{{define}}/{{template}}/{{block}}` 递归动作），模板文件与 review 数据落盘均为原子写 + 0600。
   - 切换 workdir/review 与保存互斥（统一 `s.mu → store.mu` 锁序），避免并发交错。
   - 静态文件服务通过 `NoRoute` 兜底，将未匹配路由指向 embed 的前端资源。
 

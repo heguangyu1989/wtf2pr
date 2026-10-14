@@ -1414,3 +1414,79 @@ func TestHandleSaveTemplateRejectsRecursion(t *testing.T) {
 		t.Errorf("expected 400 for recursive template, got %d", w.Code)
 	}
 }
+
+func TestHandleGetReviewsSortedByUpdatedAt(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	seed := func(id string, updatedAt int64) {
+		body := `{"reviewID":"` + id + `","type":"working","createdAt":1,"updatedAt":` + strconv.FormatInt(updatedAt, 10) + `,"comments":[{"id":"1","filePath":"a.txt","content":"c"}]}`
+		if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_"+id+".json"), []byte(body), 0600); err != nil {
+			t.Fatalf("failed to seed: %v", err)
+		}
+	}
+	seed("old-one", 100)
+	seed("new-one", 300)
+	seed("mid-one", 200)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/reviews", nil)
+	srv.engine.ServeHTTP(w, req)
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	items := resp.Data.([]interface{})
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	got := []string{}
+	for _, it := range items {
+		got = append(got, it.(map[string]interface{})["reviewID"].(string))
+	}
+	want := []string{"new-one", "mid-one", "old-one"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("expected order %v, got %v", want, got)
+			break
+		}
+	}
+}
+
+func TestHandleExportCorruptedReview(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 损坏的 review 文件：导出应 500 而非静默回退当前 review
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_"+id+".json"), []byte(`{corrupted`), 0600); err != nil {
+		t.Fatalf("failed to seed corrupted review: %v", err)
+	}
+	body, _ := json.Marshal(models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking, ReviewID: id})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for corrupted review, got %d", w.Code)
+	}
+}
+
+func TestHandleGetReviewDetailLegacyFormat(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 旧版 []Comment 格式的文件详情应可读（列表页可见的文件详情页不能 500）
+	id := "660e8400-e29b-41d4-a716-446655440000"
+	if err := os.WriteFile(filepath.Join(srv.getStorageDir(), "review_"+id+".json"), []byte(`[{"id":"1","filePath":"a.go","content":"legacy"}]`), 0600); err != nil {
+		t.Fatalf("failed to seed legacy review: %v", err)
+	}
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/review/detail?id="+id, nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for legacy review detail, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	comments := resp.Data.(map[string]interface{})["comments"].([]interface{})
+	if len(comments) != 1 {
+		t.Errorf("expected 1 legacy comment, got %v", comments)
+	}
+}

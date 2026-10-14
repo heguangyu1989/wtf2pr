@@ -81,6 +81,7 @@
       />
       <DiffFile
         v-else-if="selectedFile"
+        :key="selectedFile.newFile || selectedFile.oldFile"
         :file="selectedFile"
         :comments="comments"
         @update:comments="$emit('update:comments', $event)"

@@ -47,6 +47,23 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 			current.NewFile = ""
 			continue
 		}
+		// 纯重命名/复制没有 --- / +++ 行，文件名从 rename/copy 行兜底（含空格名同样适用）
+		if strings.HasPrefix(line, "rename from ") {
+			current.OldFile = strings.TrimPrefix(line, "rename from ")
+			continue
+		}
+		if strings.HasPrefix(line, "rename to ") {
+			current.NewFile = strings.TrimPrefix(line, "rename to ")
+			continue
+		}
+		if strings.HasPrefix(line, "copy from ") {
+			current.OldFile = strings.TrimPrefix(line, "copy from ")
+			continue
+		}
+		if strings.HasPrefix(line, "copy to ") {
+			current.NewFile = strings.TrimPrefix(line, "copy to ")
+			continue
+		}
 		if strings.HasPrefix(line, "Binary files ") {
 			current.IsBinary = true
 			continue
@@ -145,11 +162,6 @@ func parseRange(s string) (start, lines int, err error) {
 }
 
 func parseDiffLine(line string, oldNo, newNo *int) models.DiffLine {
-	if len(line) == 0 {
-		*oldNo++
-		*newNo++
-		return models.DiffLine{Type: models.LineTypeContext, OldLineNo: *oldNo - 1, NewLineNo: *newNo - 1, Content: ""}
-	}
 	prefix := line[0]
 	content := line[1:]
 	switch prefix {

@@ -18,12 +18,12 @@
 
         <form @submit.prevent="onSubmit">
           <input
+            ref="tokenInput"
             v-model="token"
             type="password"
             autocomplete="off"
             placeholder="Access Token"
             class="w-full px-3 py-2.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition font-mono"
-            autofocus
           />
           <p v-if="error" class="text-xs text-red-500 mt-2">{{ error }}</p>
           <button
@@ -43,7 +43,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { setToken, checkAuth } from '../api/client.js'
 
 const emit = defineEmits(['authenticated'])
@@ -51,6 +51,11 @@ const emit = defineEmits(['authenticated'])
 const token = ref('')
 const error = ref('')
 const loading = ref(false)
+const tokenInput = ref(null)
+
+onMounted(() => {
+  tokenInput.value?.focus()
+})
 
 async function onSubmit() {
   const value = token.value.trim()

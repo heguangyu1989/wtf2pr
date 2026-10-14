@@ -14,7 +14,7 @@
   - 尚未被 Git 跟踪的新文件（untracked）
 - **Commit Review**：输入任意 Commit Hash，查看该 Commit 的完整 Diff 与 Commit 信息。
 - **工作目录切换**：启动后可在页面上随时切换工作目录（支持目录浏览与最近使用列表），无需重启服务。
-- **按目录隔离存储**：每个工作目录的 Review 数据独立存储在 `~/.wtf2pr/workspaces/<目录哈希>/` 下，互不干扰；旧版扁平存储的数据会在首次启动时自动迁移。
+- **按目录隔离存储**：每个工作目录的 Review 数据独立存储在 `~/.wtf2pr/workspaces/<目录哈希>/` 下，互不干扰；旧版扁平存储的数据会在对应工作区数据区首次创建时自动迁移。
 - **访问令牌鉴权**：服务启动时自动生成随机 Token（也可在配置文件中指定固定值），Web 端所有 API 均需携带令牌访问。
 - **路径访问限制**：支持 YAML 配置文件（`allowed_dirs`）限制 Web 端可访问的目录范围，防止越权切换或浏览服务器文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见。
@@ -128,7 +128,7 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 > 数据存储规则：
 > - 每个工作目录对应独立数据区：`~/.wtf2pr/workspaces/<目录哈希>/`（目录与文件权限分别为 0700 / 0600）
 > - 当前 Review 默认存储为 `review.json`，新建的 Review 存储为 `review_{uuid}.json`，导出模板为 `export.tpl`，工作区元信息为 `workspace.json`
-> - 首次启动时会将旧版直接放在 `~/.wtf2pr/` 下的数据（review 文件与导出模板）自动迁移到对应工作目录的数据区
+> - 旧版直接放在 `~/.wtf2pr/` 下的数据（review 文件与导出模板）会在对应工作区数据区首次创建时自动迁移
 
 ---
 
@@ -169,7 +169,7 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 - `POST /api/review/new` — 新建 Review
 - `POST /api/review/switch` — 切换当前 Review
 - `POST /api/export` — 导出 Review 报告（Markdown / JSON / XML / Template）
-- `GET|POST /api/template` — 读取 / 保存自定义导出模板（禁止 `{{define}}/{{template}}` 递归动作）
+- `GET|POST /api/template` — 读取 / 保存自定义导出模板（禁止 `{{define}}/{{template}}/{{block}}` 递归动作）
 - `GET /api/workdir` — 获取当前工作目录与已知工作区列表
 - `POST /api/workdir` — 切换工作目录（`{"path": "/path/to/repo"}`，数据区随之切换；目标必须是 git 仓库，否则返回 400）
 - `GET /api/fs/browse?path=<dir>` — 浏览服务器目录（用于工作目录选择，超 500 条截断）

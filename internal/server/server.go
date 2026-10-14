@@ -71,6 +71,10 @@ func NewServer(opts Options) *Server {
 			fmt.Fprintf(os.Stderr, "warning: home dir unavailable, using temp data root %s\n", dataRoot)
 		}
 	}
+	// 旧版本可能以 0755 创建了数据根目录，启动时统一收紧
+	if info, err := os.Stat(dataRoot); err == nil && info.IsDir() && info.Mode().Perm() != 0700 {
+		_ = os.Chmod(dataRoot, 0700)
+	}
 
 	workDir := normalizeOrClean(opts.WorkDir)
 
@@ -303,8 +307,8 @@ func (s *Server) reviewFileForIDLocked(id string) string {
 	return filepath.Join(s.storageDir, "review_"+id+".json")
 }
 
-// readReviewByIDLocked 持读锁按 ID 读取 review 文件内容；ID 非法返回空字符串路径
-func (s *Server) readReviewByIDLocked(id string) (string, []byte, error) {
+// readReviewByID 持读锁按 ID 读取 review 文件内容；ID 非法返回空字符串路径
+func (s *Server) readReviewByID(id string) (string, []byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	reviewFile := s.reviewFileForIDLocked(id)
@@ -518,6 +522,10 @@ func (s *Server) handleGetCommits(c *gin.Context) {
 	if req.PageSize > 100 {
 		req.PageSize = 100
 	}
+	// 页码上限，防止巨大 page 造成 skip 溢出与无谓的全历史遍历
+	if req.Page > 1000000 {
+		req.Page = 1000000
+	}
 	resp, err := git.GetCommits(s.getWorkDir(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
@@ -545,6 +553,15 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 
 func (s *Server) handleGetReview(c *gin.Context) {
 	persisted := s.store.GetPersisted()
+	// 前端只消费 type/commit/comments/reviewID 与 commitInfo，剥离内嵌 diff 文件内容避免每次全量传输
+	if persisted.Diff != nil {
+		persisted.Diff = &models.DiffResponse{
+			Type:       persisted.Diff.Type,
+			Commit:     persisted.Diff.Commit,
+			CommitInfo: persisted.Diff.CommitInfo,
+			Truncated:  persisted.Diff.Truncated,
+		}
+	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: persisted})
 }
 
@@ -555,7 +572,7 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		return
 	}
 	// 持读锁贯穿"取路径+读文件"，避免与 workdir 切换交错读到旧 workspace 的文件
-	reviewFile, data, err := s.readReviewByIDLocked(id)
+	reviewFile, data, err := s.readReviewByID(id)
 	if reviewFile == "" {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 		return
@@ -566,19 +583,31 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 	}
 	var pr models.PersistedReview
 	if err := json.Unmarshal(data, &pr); err != nil {
-		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
-		return
+		// 旧版 []Comment 格式兜底：列表页对这些文件可见，详情页同样应可读
+		var comments []models.Comment
+		if lerr := json.Unmarshal(data, &comments); lerr != nil {
+			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + err.Error()})
+			return
+		}
+		pr = models.PersistedReview{Comments: comments}
 	}
 	pr.Commit = strings.TrimSpace(pr.Commit)
-	if pr.Type == "" && pr.Commit != "" {
-		pr.Type = string(models.DiffTypeCommit)
-	} else if pr.Type == "" {
-		pr.Type = string(models.DiffTypeWorking)
-	}
+	pr.Type = inferReviewType(pr.Type, pr.Commit)
 	if pr.Type == string(models.DiffTypeCommit) && pr.Commit != "" {
 		pr.CommitExists = git.CommitsExist(s.getWorkDir(), []string{pr.Commit})[pr.Commit]
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
+}
+
+// inferReviewType 根据存储的 type 与 commit 推断 review 类型
+func inferReviewType(t, commit string) string {
+	if t != "" {
+		return t
+	}
+	if commit != "" {
+		return string(models.DiffTypeCommit)
+	}
+	return string(models.DiffTypeWorking)
 }
 
 func (s *Server) handleSaveReview(c *gin.Context) {
@@ -593,7 +622,7 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 	defer s.mu.RUnlock()
 
 	reviewID := s.currentReviewIDLocked()
-	now := getTimestamp()
+	now := time.Now().Unix()
 	old := s.store.GetPersisted()
 
 	// 如果评论为空，直接删除文件（不写入历史）
@@ -684,13 +713,8 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 			if data, err := os.ReadFile(fp); err == nil {
 				var pr reviewListMeta
 				if err := json.Unmarshal(data, &pr); err == nil {
-					item.Type = pr.Type
+					item.Type = inferReviewType(pr.Type, strings.TrimSpace(pr.Commit))
 					item.Commit = strings.TrimSpace(pr.Commit)
-					if item.Type == "" && item.Commit != "" {
-						item.Type = string(models.DiffTypeCommit)
-					} else if item.Type == "" {
-						item.Type = string(models.DiffTypeWorking)
-					}
 					item.CommentCount = len(pr.Comments)
 					item.CreatedAt = pr.CreatedAt
 					item.UpdatedAt = pr.UpdatedAt
@@ -719,6 +743,13 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 				items[i].CommitExists = exists[items[i].Commit]
 			}
 		}
+		// 最近更新在前（updatedAt 相同按 ReviewID 稳定次序）
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].UpdatedAt != items[j].UpdatedAt {
+				return items[i].UpdatedAt > items[j].UpdatedAt
+			}
+			return items[i].ReviewID < items[j].ReviewID
+		})
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: items})
 }
@@ -785,7 +816,7 @@ func (s *Server) handleExport(c *gin.Context) {
 
 	if req.ReviewID != "" {
 		// 持读锁贯穿"取路径+读文件"，避免与 workdir 切换交错读到旧 workspace 的文件
-		reviewFile, data, err := s.readReviewByIDLocked(req.ReviewID)
+		reviewFile, data, err := s.readReviewByID(req.ReviewID)
 		if reviewFile == "" {
 			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 			return
@@ -801,6 +832,15 @@ func (s *Server) handleExport(c *gin.Context) {
 				diff = pr.Diff
 			}
 			comments = pr.Comments
+		} else {
+			// 旧版 []Comment 格式：无内嵌 diff，仅评论可用于导出
+			var legacy []models.Comment
+			if lerr := json.Unmarshal(data, &legacy); lerr != nil {
+				// 与"不存在→404"同一语义：损坏文件不能静默回退导出成当前 review 的内容
+				c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + err.Error()})
+				return
+			}
+			comments = legacy
 		}
 	}
 
@@ -873,8 +913,4 @@ func (s *Server) handleSaveTemplate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
-}
-
-func getTimestamp() int64 {
-	return time.Now().Unix()
 }

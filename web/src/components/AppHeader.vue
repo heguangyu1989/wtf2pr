@@ -54,10 +54,10 @@
         >导出</button>
         <button
           class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="!canSave"
+          :disabled="!canSave || saving"
           :title="canSave ? '' : '仅在 Commit 页可保存 Review'"
           @click="$emit('saveReview')"
-        >保存 Review</button>
+        >{{ saving ? '保存中…' : '保存 Review' }}</button>
       </div>
     </div>
   </header>
@@ -68,6 +68,7 @@ import { computed } from 'vue'
 
 const props = defineProps({
   saved: { type: Boolean, default: true },
+  saving: { type: Boolean, default: false },
   exportFormat: { type: String, default: 'markdown' },
   reviewLabel: { type: String, default: '' },
   workDir: { type: String, default: '' },

@@ -63,7 +63,11 @@ go test ./internal/server/ -v
 | `TestUntrackedFileCountCap` | 验证未跟踪文件数量超限截断并标记 `Truncated` |
 | `TestTextconvNotExecuted` | 验证恶意仓库配置的 textconv 钩子不会被执行（working 与 commit diff 双向） |
 | `TestParseDiffSpacedFilename` | 验证含空格文件名以 `--- `/`+++ ` 行为准正确解析 |
+| `TestParseDiffRenameSpacedFilename` | 验证纯重命名含空格文件名从 `rename from/to` 行正确解析 |
 | `TestParseDiffHunkContentWithDashDashPrefix` | 验证 hunk 内 `-- `/`++ ` 前缀的内容行不被误判为文件头且行数据完整 |
+| `TestGpgProgramNotExecuted` | 验证 `log.showSignature` + 恶意 `gpg.program`（脚本版）不触发（含阳性对照与伪造签名 commit） |
+| `TestMergeCommitDiff` | 验证 merge commit 经 `-m --first-parent` 返回非空 diff |
+| `TestEmptyRepo` | 验证空仓库（零 commit）working diff 仅返回 untracked、commits 返回空列表 |
 | `TestValidateCommitRef` | 验证 commit 引用白名单：合法 rev（HEAD~3、分支、hash）放行，选项注入（`--output=` 等）拒绝 |
 | `TestGetCommitDiff_RejectsOptionInjection` | 验证选项注入不产生任意文件写 |
 | `TestCommitsExistRejectsInvalidRef` | 验证非法引用返回 false |
@@ -82,7 +86,7 @@ go test ./internal/server/ -v
 | `TestNewStore_MemoryOnly` | 验证无文件路径时创建纯内存 Store，初始为空 |
 | `TestStoreSaveAndGet` | 验证 `Save` 后 `Get` 返回正确数据，且返回的是深拷贝（修改结果不影响 Store） |
 | `TestStoreFilePersistence` | 验证带文件路径的 Store 能将评论持久化到 JSON，并从 JSON 重新加载 |
-| `TestStoreClear` | 验证 `Clear` 清空内存与磁盘文件 |
+| `TestStoreSaveEmptyDeletesFile` | 验证保存空评论清空内存并删除文件 |
 | `TestStoreSwitchFile` | 验证 `SwitchFile` 切换存储文件后自动加载该文件已有评论，且旧文件数据不受影响 |
 | `TestStoreEmptyNotWritten` | 验证空评论保存时删除文件而非写入空文件 |
 | `TestStoreConcurrency` | 高并发读写测试（100 协程），验证 `sync.RWMutex` 无线程安全问题 |
@@ -104,9 +108,8 @@ go test ./internal/server/ -v
 | `TestFindCodeContext_OldLine` | 验证通过 `old:{lineNo}` 在 diff 中定位到对应删除代码行 |
 | `TestFindCodeContext_NotFound` | 验证不存在的行号返回空字符串 |
 | `TestFindCodeContext_InvalidLineKey` | 验证非法 `lineKey` 格式返回空字符串 |
-| `TestLineKeyToDisplay` | 验证 `lineKey` 空值显示为 `file`，非空保持原样 |
 | `TestRenderTemplate` | 验证 Go `text/template` 自定义模板导出 |
-| `TestValidateTemplateRejectsRecursion` | 验证递归模板（`{{define}}/{{template}}` 及其空白变体）被拒绝 |
+| `TestValidateTemplateRejectsRecursion` | 验证递归模板（`{{define}}/{{template}}/{{block}}` 及其空白变体）被拒绝 |
 
 ---
 
@@ -124,8 +127,9 @@ go test ./internal/server/ -v
 | `TestHandleGetDiff_Working` | 在真实临时 Git 仓库中修改文件，验证 `GET /api/diff?type=working` 返回 diff 数据 |
 | `TestHandleGetCommits` | 在真实临时 Git 仓库中验证 `GET /api/commits` 返回分页 Commit 列表 |
 | `TestHandleGetCommitsPageSizeCap` | 验证 `page_size` 超过上限时被收敛到 100 |
-| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回有评论的历史 review 列表 |
+| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回有评论的历史 review 列表（按 updatedAt 倒序） |
 | `TestHandleGetReviewsFiltersEmpty` | 向存储目录预置零评论与有评论文件，真实验证零评论被过滤 |
+| `TestHandleGetReviewsSortedByUpdatedAt` | 验证历史列表按 updatedAt 倒序排列 |
 | `TestHandleGetReviewsCommitExists` | 验证 commit 类型 review 列表的 `commitExists` 真值/假值路径与 detail 校验 |
 | `TestDefaultReviewListedAndSwitchable` | 验证默认 review.json 以 `default` 标识入列、可切换切回、detail 可读 |
 | `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID 并切换当前 review（文件在首次非空保存时才落盘） |
@@ -133,6 +137,8 @@ go test ./internal/server/ -v
 | `TestHandleGetReviewDetail` | 验证 review 详情读取与不存在的 ID 返回 404 |
 | `TestHandleExport` | 验证 `POST /api/export` 返回指定格式的导出内容 |
 | `TestHandleExportMissingReviewID` | 验证显式指定不存在的 reviewID 返回 404（不静默回退当前 review） |
+| `TestHandleExportCorruptedReview` | 验证损坏的 review 文件导出返回 500（不静默张冠李戴） |
+| `TestHandleGetReviewDetailLegacyFormat` | 验证旧版 []Comment 格式 review 详情可读 |
 | `TestHandleGetTemplate` / `TestHandleSaveTemplate` | 验证导出模板读取与保存 |
 | `TestHandleSaveTemplateRejectsRecursion` | 验证递归模板保存被 400 拒绝 |
 
@@ -177,5 +183,5 @@ go test ./internal/server/ -v
 ## 测试统计
 
 - **总测试包数**：5 个
-- **总测试函数**：93 个
+- **总测试函数**：99 个
 - **全部通过状态**：✅ `PASS`（`go test -race -count=1 ./internal/...`）
