@@ -564,3 +564,108 @@ func TestEmptyRepo(t *testing.T) {
 		t.Errorf("expected empty commit list, got %+v", list)
 	}
 }
+
+func TestFilterDriverNotExecuted(t *testing.T) {
+	dir := initGitRepo(t)
+	marker := filepath.Join(t.TempDir(), "filter-pwned.txt")
+	// 恶意仓库配置：filter 驱动的 clean 在 git diff 工作区文件时执行
+	prog := filepath.Join(dir, "evil-filter.sh")
+	if err := os.WriteFile(prog, []byte("#!/bin/sh\ncat\ntouch "+marker+"\n"), 0755); err != nil {
+		t.Fatalf("failed to write evil filter: %v", err)
+	}
+	cfg := "[filter \"pwn\"]\n\tclean = " + prog + "\n"
+	f, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open git config: %v", err)
+	}
+	if _, err := f.WriteString(cfg); err != nil {
+		t.Fatalf("failed to write git config: %v", err)
+	}
+	f.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.txt filter=pwn\n"), 0644); err != nil {
+		t.Fatalf("failed to write gitattributes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatalf("failed to write a.txt: %v", err)
+	}
+
+	// 阳性对照：不带防护的裸 git diff 确实触发（证明配置是活的）
+	direct := exec.Command("git", "-c", "core.fsmonitor=false", "diff", "HEAD")
+	direct.Dir = dir
+	direct.Env = gitEnv()
+	_ = direct.Run()
+	if _, err := os.Stat(marker); err != nil {
+		t.Skipf("positive control failed: malicious filter did not trigger marker: %v", err)
+	}
+	_ = os.Remove(marker)
+
+	// 经过本工具的调用必须不触发
+	if _, err := getWorkingDiff(dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("filter.clean hook should not be executed")
+	}
+}
+
+func TestParseDiffModeOnlySpacedFilename(t *testing.T) {
+	// 纯权限变更且无 ---/+++、无 rename 行时，从 diff --git 头按最后一个 " b/" 分隔解析
+	raw := `diff --git a/my file.sh b/my file.sh
+old mode 100644
+new mode 100755
+`
+	files, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].OldFile != "my file.sh" || files[0].NewFile != "my file.sh" {
+		t.Errorf("mode-only spaced filename parsed wrong: old=%q new=%q", files[0].OldFile, files[0].NewFile)
+	}
+}
+
+func TestEmptySubjectCommitInfo(t *testing.T) {
+	dir := initGitRepo(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	// 空 message commit：CommitInfo 的 hash/author/date 不应整体丢失
+	run("commit", "--allow-empty", "--allow-empty-message", "-m", "")
+	resp, err := getCommitDiff(dir, "HEAD")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.CommitInfo == nil || resp.CommitInfo.Hash == "" || resp.CommitInfo.Author == "" {
+		t.Errorf("empty-subject commit should retain CommitInfo, got %+v", resp.CommitInfo)
+	}
+}
+
+func TestUntrackedTotalBytesCap(t *testing.T) {
+	dir := initGitRepo(t)
+	for i := 0; i < 5; i++ {
+		big := make([]byte, 512)
+		for j := range big {
+			big[j] = 'a'
+		}
+		if err := os.WriteFile(filepath.Join(dir, "f"+strconv.Itoa(i)+".txt"), append(big, '\n'), 0644); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+	}
+	oldFiles, oldBytes := maxUntrackedFiles, maxUntrackedTotalBytes
+	maxUntrackedFiles, maxUntrackedTotalBytes = 100, 1024
+	t.Cleanup(func() { maxUntrackedFiles, maxUntrackedTotalBytes = oldFiles, oldBytes })
+
+	resp, err := getWorkingDiff(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Truncated {
+		t.Errorf("expected Truncated=true when aggregate untracked bytes exceed cap")
+	}
+}

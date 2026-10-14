@@ -180,7 +180,7 @@ async function browse(path) {
 async function onSelect(path) {
   if (switching.value) return
   // 确认必须在发起切换之前，否则取消会造成前后端状态分裂
-  if (props.hasUnsaved && !window.confirm('当前有未保存的评论，切换工作目录后将被丢弃，确认切换？')) {
+  if (props.hasUnsaved && !window.confirm('当前有未保存的内容（评论或模板修改），切换工作目录后将被丢弃，确认切换？')) {
     return
   }
   switching.value = true
@@ -213,7 +213,8 @@ onMounted(async () => {
       await browse('')
     }
   } catch (e) {
-    if ((e && e.status === 401) || unauth) {
+    // browse 内部已捕获所有异常（含 401 并 emit），此 catch 只会命中 getWorkdir 的失败
+    if (e && e.status === 401) {
       emit('unauthorized')
       return
     }

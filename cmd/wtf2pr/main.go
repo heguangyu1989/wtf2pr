@@ -100,6 +100,9 @@ func main() {
 			fmt.Printf("Starting server at http://%s:%d (workdir: %s)\n", host, port, workDir)
 			fmt.Printf("Access token: %s\n", token)
 			fmt.Println("Keep this token private; it grants full access to the web API.")
+			if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+				fmt.Fprintf(os.Stderr, "warning: binding to %s exposes the service to the network; token is sent over plain HTTP\n", host)
+			}
 			if len(allowedDirs) > 0 {
 				fmt.Printf("Path restriction enabled (%s), allowed dirs:\n", configFile)
 				for _, dir := range allowedDirs {

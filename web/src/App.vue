@@ -54,7 +54,8 @@
           <div class="flex flex-wrap items-center gap-2 shrink-0 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl px-3 py-2 shadow-sm">
             <select
               v-model="selectedCommitHash"
-              class="border border-gray-300 dark:border-gray-700 rounded-lg px-2 py-1.5 text-sm w-72 bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              class="border border-gray-300 dark:border-gray-700 rounded-lg px-2 py-1.5 text-sm w-72 bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:opacity-50"
+              :disabled="!!switchingReview"
             >
               <option value="">选择 Commit</option>
               <option v-for="c in commitList" :key="c.hash" :value="c.hash">
@@ -280,7 +281,9 @@ const reviewList = ref([])
 const historyReviewData = ref(null)
 const templateContent = ref('')
 const templateDirty = ref(false)
+const savingTemplate = ref(false)
 const switchingReview = ref('')
+const commitsLoaded = ref(false)
 
 function guardAuth(e) {
   if (e && e.status === 401) {
@@ -303,8 +306,8 @@ let diffSeq = 0
 // commit 列表加载序号：仅最新一次 loadCommits 生效
 let commitSeq = 0
 
-// 脏状态：有未保存的评论（统一判定，供确认拦截/头部徽标使用）
-const isDirty = computed(() => !saved.value && comments.value.length > 0)
+// 脏状态：评论有未保存的变更（含删光评论后的删除意图；统一判定，供确认拦截/头部徽标使用）
+const isDirty = computed(() => !saved.value)
 // 含模板草稿在内的全部未保存内容（供 workdir 切换确认与 beforeunload 拦截）
 const hasUnsavedAll = computed(() => isDirty.value || templateDirty.value)
 
@@ -369,7 +372,7 @@ async function loadTab(tab) {
     saved.value = true
     await loadDiff('working')
   } else if (tab === 'commit') {
-    if (commitList.value.length === 0) {
+    if (!commitsLoaded.value) {
       await loadCommits()
     }
     if (selectedCommitHash.value) {
@@ -437,6 +440,7 @@ function cancelDiff() {
   diffSeq++
   diffData.value = null
   loading.value = false
+  error.value = ''
 }
 
 async function loadCommits() {
@@ -447,12 +451,16 @@ async function loadCommits() {
     commitList.value = res.list || []
     commitPage.value = res.page || 1
     commitTotalPages.value = res.totalPages || 1
+    commitsLoaded.value = true
     // 列表整体替换后，恢复出的页外 hash 需要重新插入临时选项，避免下拉空白
     ensureCommitOption(selectedCommitHash.value)
   } catch (err) {
     if (guardAuth(err)) return
     if (seq !== commitSeq) return
+    // 失败时清空页码状态，再次进入 commit 页可重试
     commitList.value = []
+    commitPage.value = 1
+    commitTotalPages.value = 1
   }
 }
 
@@ -543,15 +551,23 @@ async function onSwitchHistoryReview(reviewItem) {
     let review
     try {
       await apiSwitchReview(reviewItem.reviewID)
-      review = await getReview()
     } catch (e) {
       if (guardAuth(e)) return
       alert('切换 Review 失败: ' + e.message)
       return
     }
+    try {
+      review = await getReview()
+    } catch (e) {
+      if (guardAuth(e)) return
+      // 服务端其实已切换成功，仅状态同步失败，避免误导用户重试切换
+      alert('已切换，但加载 Review 数据失败: ' + e.message)
+      return
+    }
     // 两步 RPC 之间可能发生并发切换：以 reviewID 校验服务端当前 review 与目标一致，防止评论错位
-    const expectedID = reviewItem.reviewID === 'default' ? '' : reviewItem.reviewID
-    if ((review.reviewID || '') !== expectedID) {
+    // （旧版文件 reviewID 可能为空，空值视为 default）
+    const actualID = review.reviewID || 'default'
+    if (actualID !== reviewItem.reviewID) {
       alert('切换结果与预期不一致，请重试')
       return
     }
@@ -564,7 +580,7 @@ async function onSwitchHistoryReview(reviewItem) {
       reviewLabel.value = formatReviewLabel({ reviewID: reviewItem.reviewID })
       saved.value = true
       comments.value = review.comments || []
-      if (commitList.value.length === 0) {
+      if (!commitsLoaded.value) {
         await loadCommits()
       }
       ensureCommitOption(selectedCommitHash.value, reviewItem.commitMsg)
@@ -583,12 +599,15 @@ async function onSwitchHistoryReview(reviewItem) {
   }
 }
 
+let viewSeq = 0
+
 async function onViewHistoryReview(reviewItem) {
   const e = epoch
+  const seq = ++viewSeq
   try {
     const detail = await getReviewDetail(reviewItem.reviewID)
-    // workdir 切换会使旧详情失效，不得跨切换弹出
-    if (stale(e)) return
+    // workdir 切换会使旧详情失效；同 epoch 内快速连点只保留最后一次
+    if (stale(e) || seq !== viewSeq) return
     historyReviewData.value = detail
   } catch (err) {
     if (guardAuth(err)) return
@@ -626,13 +645,21 @@ async function loadTemplate(e) {
 }
 
 async function onSaveTemplate() {
+  if (savingTemplate.value) return
+  savingTemplate.value = true
+  // 版本快照：保存往返期间继续输入的内容不得被响应误标为已保存
+  const snapshot = templateContent.value
   try {
-    await apiSaveTemplate(templateContent.value)
-    templateDirty.value = false
+    await apiSaveTemplate(snapshot)
+    if (templateContent.value === snapshot) {
+      templateDirty.value = false
+    }
     alert('模板保存成功')
   } catch (e) {
     if (guardAuth(e)) return
     alert('模板保存失败: ' + e.message)
+  } finally {
+    savingTemplate.value = false
   }
 }
 
@@ -643,6 +670,7 @@ function resetState() {
   diffData.value = null
   comments.value = []
   commitList.value = []
+  commitsLoaded.value = false
   commitPage.value = 1
   commitTotalPages.value = 1
   reviewList.value = []

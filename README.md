@@ -148,7 +148,8 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 └── docs/
     ├── system_design.md    # 系统设计文档
     ├── unit_tests.md       # 单元测试清单
-    └── git-commit-rules.md # git 提交规范
+    ├── git-commit-rules.md # git 提交规范
+    └── reviews/            # 历次全面代码评审报告（JSON + 交互式 HTML）
 ```
 
 ---

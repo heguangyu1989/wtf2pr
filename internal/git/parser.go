@@ -27,10 +27,12 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 			}
 			current = &models.FileDiff{}
 			currentHunk = nil
-			parts := strings.SplitN(line, " ", 4)
-			if len(parts) >= 4 {
-				current.OldFile = strings.TrimPrefix(parts[2], "a/")
-				current.NewFile = strings.TrimPrefix(parts[3], "b/")
+			// 解析 diff --git a/<old> b/<new>：从尾部找最后一个 " b/" 分隔，兼容含空格文件名
+			if rest, ok := strings.CutPrefix(line, "diff --git a/"); ok {
+				if idx := strings.LastIndex(rest, " b/"); idx >= 0 {
+					current.OldFile = rest[:idx]
+					current.NewFile = rest[idx+3:]
+				}
 			}
 			continue
 		}

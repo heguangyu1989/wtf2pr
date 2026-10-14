@@ -52,7 +52,7 @@ const (
 
 // DiffRequest 请求 diff 的参数
 type DiffRequest struct {
-	Type   DiffType `json:"type" form:"type" binding:"required"`
+	Type   DiffType `json:"type" form:"type"`
 	Commit string   `json:"commit,omitempty" form:"commit,omitempty"`
 }
 

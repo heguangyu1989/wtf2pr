@@ -2,6 +2,7 @@ package review
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 
@@ -31,16 +32,23 @@ func NewStore(filePath string) *Store {
 	return s
 }
 
-func (s *Store) loadData(data []byte) {
+// ParsePersisted 解析 review 存储文件内容，兼容旧版 []Comment 格式；两种格式都无法解析时返回错误
+func ParsePersisted(data []byte) (*models.PersistedReview, error) {
 	var pr models.PersistedReview
 	if err := json.Unmarshal(data, &pr); err == nil {
-		s.persisted = &pr
-		return
+		return &pr, nil
 	}
-	// backward compatibility: old format is []Comment
+	// 旧版格式：顶层为评论数组
 	var comments []models.Comment
 	if err := json.Unmarshal(data, &comments); err == nil {
-		s.persisted.Comments = comments
+		return &models.PersistedReview{Comments: comments}, nil
+	}
+	return nil, fmt.Errorf("unrecognized review file format")
+}
+
+func (s *Store) loadData(data []byte) {
+	if pr, err := ParsePersisted(data); err == nil {
+		s.persisted = pr
 	}
 }
 

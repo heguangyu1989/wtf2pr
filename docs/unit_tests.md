@@ -66,8 +66,14 @@ go test ./internal/server/ -v
 | `TestParseDiffRenameSpacedFilename` | 验证纯重命名含空格文件名从 `rename from/to` 行正确解析 |
 | `TestParseDiffHunkContentWithDashDashPrefix` | 验证 hunk 内 `-- `/`++ ` 前缀的内容行不被误判为文件头且行数据完整 |
 | `TestGpgProgramNotExecuted` | 验证 `log.showSignature` + 恶意 `gpg.program`（脚本版）不触发（含阳性对照与伪造签名 commit） |
+| `TestFilterDriverNotExecuted` | 验证恶意 `filter.<driver>.clean` 在 working diff 时不触发（含阳性对照） |
 | `TestMergeCommitDiff` | 验证 merge commit 经 `-m --first-parent` 返回非空 diff |
 | `TestEmptyRepo` | 验证空仓库（零 commit）working diff 仅返回 untracked、commits 返回空列表 |
+| `TestEmptySubjectCommitInfo` | 验证空 subject 的 commit 仍保留完整 CommitInfo（hash/author/date） |
+| `TestParseDiffRenameSpacedFilename` | 验证纯重命名含空格文件名从 `rename from/to` 行正确解析 |
+| `TestParseDiffModeOnlySpacedFilename` | 验证纯权限变更含空格文件名从 `diff --git` 头按尾部 ` b/` 分隔正确解析 |
+| `TestParseDiffHunkContentWithDashDashPrefix` | 验证 hunk 内 `-- `/`++ ` 前缀的内容行不被误判为文件头且行数据完整 |
+| `TestUntrackedTotalBytesCap` | 验证未跟踪文件聚合字节超限截断并标记 `Truncated` |
 | `TestValidateCommitRef` | 验证 commit 引用白名单：合法 rev（HEAD~3、分支、hash）放行，选项注入（`--output=` 等）拒绝 |
 | `TestGetCommitDiff_RejectsOptionInjection` | 验证选项注入不产生任意文件写 |
 | `TestCommitsExistRejectsInvalidRef` | 验证非法引用返回 false |
@@ -125,6 +131,8 @@ go test ./internal/server/ -v
 | `TestHandleGetReview` | 验证 `GET /api/review` 初始返回空评论列表 |
 | `TestHandleSaveReview` | 验证 `POST /api/review` 保存后，再次 GET 能正确取回 |
 | `TestHandleGetDiff_Working` | 在真实临时 Git 仓库中修改文件，验证 `GET /api/diff?type=working` 返回 diff 数据 |
+| `TestHandleGetDiffDefaultType` | 验证不传 `type` 参数时默认 working 而非 400 |
+| `TestHandleGetDiffInvalidCommitRef` | 验证非法 commit 引用与缺失 commit 参数返回 400 |
 | `TestHandleGetCommits` | 在真实临时 Git 仓库中验证 `GET /api/commits` 返回分页 Commit 列表 |
 | `TestHandleGetCommitsPageSizeCap` | 验证 `page_size` 超过上限时被收敛到 100 |
 | `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回有评论的历史 review 列表（按 updatedAt 倒序） |
@@ -183,5 +191,5 @@ go test ./internal/server/ -v
 ## 测试统计
 
 - **总测试包数**：5 个
-- **总测试函数**：99 个
+- **总测试函数**：105 个
 - **全部通过状态**：✅ `PASS`（`go test -race -count=1 ./internal/...`）

@@ -1,0 +1,355 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wtf2pr feat/workspace-auth-ui 全面 Review（第四轮）</title><style>
+  :root {
+    --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --bg-soft: #f6f8fa;
+    --ok: #1a7f37; --ok-bg: #e6f4ea; --pending: #6e7781; --pending-bg: #f6f8fa;
+    --warn: #9a6700; --warn-bg: #fff8e6; --accent: #0969da; --crit: #b42318; --crit-bg: #fdecea;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--fg);
+         max-width: 1180px; margin: 0 auto; padding: 24px 32px 64px; line-height: 1.6; }
+  h1 { font-size: 24px; border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+  h2 { font-size: 18px; margin-top: 36px; border-left: 4px solid var(--accent); padding-left: 10px; }
+  h3 { font-size: 15px; margin-top: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); }
+  code { background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 1px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .done { color: var(--ok); background: var(--ok-bg); }
+  .pending { color: var(--pending); background: var(--pending-bg); border: 1px solid var(--border); }
+  .blocked { color: var(--warn); background: var(--warn-bg); }
+  .crit { color: var(--crit); background: var(--crit-bg); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+  .rule { background: var(--warn-bg); border: 1px solid #e3b341; border-radius: 8px; padding: 12px 16px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 3px 0; }
+  .small { font-size: 13px; }
+  /* 交互层 */
+  .toolbar { position: sticky; top: 0; z-index: 10; background: #fff; padding: 10px 0; border-bottom: 1px solid var(--border);
+             display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar .stats { color: var(--muted); font-size: 13px; margin-right: auto; }
+  button.tb { border: 1px solid var(--border); background: var(--bg-soft); border-radius: 6px; padding: 4px 12px;
+              font-size: 13px; cursor: pointer; }
+  button.tb:hover { border-color: var(--accent); color: var(--accent); }
+  button.tb.danger:hover { border-color: var(--crit); color: var(--crit); }
+  .fb { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; font-size: 13px; }
+  .fb-head { display: flex; gap: 8px; align-items: center; }
+  .fb-head .state { font-size: 12px; }
+  .fb textarea { width: 100%; min-height: 56px; margin-top: 6px; padding: 6px 8px; font-size: 13px;
+                 border: 1px solid var(--border); border-radius: 6px; font-family: inherit; }
+  .fb .note-view { white-space: pre-wrap; background: var(--bg-soft); border-radius: 6px; padding: 6px 8px; margin-top: 6px; }
+  .fb .note-view .t { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  tr.done-row > td { opacity: 0.62; }
+  /* 弹窗 */
+  .modal-mask { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,0.45); }
+  .modal-mask.open { display: flex; align-items: center; justify-content: center; }
+  .modal { background: #fff; border-radius: 10px; width: min(860px, 92vw); max-height: 86vh; display: flex;
+           flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+  .modal-head { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .modal-head strong { font-size: 15px; margin-right: auto; }
+  .modal-body { padding: 12px 16px; overflow: auto; }
+  .modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); }
+  .modal-foot .hint { margin-right: auto; color: var(--muted); font-size: 12px; align-self: center; }
+  .modal textarea.md-view { width: 100%; min-height: 52vh; padding: 8px 10px; font-size: 12.5px; line-height: 1.5;
+                 border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .mgr-review { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; }
+  .mgr-review-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--bg-soft); cursor: pointer; }
+  .mgr-review-head .rid { font-weight: 600; }
+  .mgr-review-head .cnt { color: var(--muted); font-size: 12px; margin-right: auto; }
+  .mgr-items { padding: 4px 12px 10px; display: none; }
+  .mgr-review.expanded .mgr-items { display: block; }
+  .mgr-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px dashed var(--border); font-size: 13px; }
+  .mgr-item .iid { font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; }
+  .mgr-item .nt { flex: 1; white-space: pre-wrap; word-break: break-all; color: var(--fg); }
+  .mgr-item .t { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .mgr-empty { color: var(--muted); padding: 18px; text-align: center; }
+</style></head><body>
+<h1>wtf2pr feat/workspace-auth-ui 全面 Review（第四轮）</h1>
+<p class="meta">任务名称：wtf2pr-workspace-auth-ui｜ 时间戳：202610141420｜ 日期：2026-10-14（开发机）<br>评审方式：<strong>5 路 fresh-eyes（正确性/简洁性/安全性能/前端全维度/契约一致性）+ 主 agent 综合判别</strong><br>涉及项目：wtf2pr<br>报告文件：<code>docs/reviews/2026-10-13-wtf2pr-full-review/R4-20261014.html</code><br>评审范围（分支 vs master 全部变更，三点 diff）：<code>wtf2pr main...feat/workspace-auth-ui</code>（32 文件 +3451/-463（7 commits）+ 修复 15 文件，commits 81e8d56..7610b04（历史已改写去除轮次标注））<br>范围外：无</p>
+<div class="toolbar"><span class="stats" id="fb-stats"></span><button class="tb" onclick="exportMarkdown()">导出 Markdown（含建议）</button><button class="tb" onclick="manageData()">数据管理</button></div>
+<div class="modal-mask" id="md-modal"><div class="modal"><div class="modal-head"><strong>导出 Markdown（含建议）</strong><button class="tb" onclick="closeModal('md-modal')">关闭</button></div><div class="modal-body"><textarea id="md-view" class="md-view" readonly></textarea></div><div class="modal-foot"><span class="hint" id="copy-hint"></span><button class="tb" onclick="copyMarkdown()">复制</button><button class="tb" onclick="closeModal('md-modal')">关闭</button></div></div></div><div class="modal-mask" id="mgr-modal"><div class="modal"><div class="modal-head"><strong>建议数据管理（本浏览器 localStorage 全部 review）</strong><button class="tb" onclick="closeModal('mgr-modal')">关闭</button></div><div class="modal-body" id="mgr-body"></div><div class="modal-foot"><span class="hint">数据仅存于当前浏览器 localStorage，按 review id 隔离</span><button class="tb danger" onclick="mgrDeleteAll()">全部删除</button><button class="tb" onclick="closeModal('mgr-modal')">关闭</button></div></div></div>
+<h2>一、总体判定</h2>
+<div class="rule"><strong>本轮捕获 1 个 Critical（filter.clean/process 为第三个同族恶意仓库 RCE 漏网向量，已实证并用枚举置空法封堵）与部分克隆懒加载 core.sshCommand RCE（GIT_NO_LAZY_FETCH 封堵）、hasHead 超时误判空仓库、重置窗口内下拉可交互、onSaveTemplate 无快照守卫等问题，全部修复并配阳性对照测试；契约角度发现的提交规范问题（轮次标注/perf type 未入列/规则文档缺口）已通过 AGENTS.md 入库、历史改写与文档回写闭环。105 个测试 -race 全绿，可合并。</strong></div>
+<table><tr><th>仓 / 角度</th><th>Important</th><th>待确认</th><th>Suggestion</th><th>结论</th></tr>
+<tr><td>wtf2pr（5 路）</td><td>2（已全部修复）</td><td>5（已记录）</td><td>18（16 修/2 保持）</td><td>✓ 可合并</td></tr>
+</table>
+<h2>二、待人类确认事项（点击条目可填写建议）</h2>
+<table><tr><th>编号</th><th>事项</th><th>背景与证据</th><th>选项/建议</th><th>处理</th></tr>
+<tr><td>1.1</td><td><strong>非 loopback 绑定仅 stderr 告警不拦截</strong></td><td>host=0.0.0.0 时 token 经明文 HTTP 传输可嗅探；已实施启动告警（binding to %s exposes the service...plain HTTP）</td><td>已实施告警；如需强制拒绝非 loopback 或引入 TLS 告知即可</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-1.1"><div class="fb-head"><span class="state"><span class="badge done">已定方案</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.2</td><td><strong>untracked 聚合上限定为 20MB（原 ~500MB 组合上限）</strong></td><td>500 文件 × 1MB 的组合上限过大且会被持久化进 review.json；已实施数量 500/单文件 1MB/聚合 20MB 三档</td><td>已实施 20MB；如需调整阈值告知即可</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-1.2"><div class="fb-head"><span class="state"><span class="badge done">已定方案</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.3</td><td><strong>CommitsExist/IsGitRepo 超时静默降级为全 false</strong></td><td>超时场景下 review 列表 commit 徽标全部误标 missing、切换报'非 git 仓库'误导；属 best-effort 降级</td><td>接受（60s 超时已封顶，降级方向安全）；如需区分错误类型可后续增强</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-1.3"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.4</td><td><strong>isDirty 语义收紧为 !saved（删光评论的删除意图也受保护）</strong></td><td>原定义要求 comments.length&gt;0，删光后切换/关页不拦截</td><td>已按收紧实施；AppHeader 徽标语义不变（saved 直读）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-1.4"><div class="fb-head"><span class="state"><span class="badge done">已定方案</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.5</td><td><strong>历史 review 无 ReviewID 字段的 legacy 文件，切换校验以 '' 视为 default 仍可能误报</strong></td><td>命名 review 的 legacy 文件无 reviewID 时校验失败提示'请重试'但永不成功</td><td>当前实现（空值视为 default，命名 review 的 legacy 文件需保存一次刷新格式）；概率低，接受</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-1.5"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+</table>
+<h2>三、编号发现</h2>
+<table><tr><th>编号</th><th>级别</th><th>仓 / 位置</th><th>问题</th><th>证据</th><th>建议修法</th><th>处理</th></tr>
+<tr><td>2.1</td><td><span class="badge crit">Critical</span></td><td><code>internal/git/git.go:124</code></td><td>恶意仓库 filter.clean/process RCE：git diff HEAD 会执行仓库 config 的 filter 驱动（第三个同族漏网向量）</td><td>实证：.gitattributes 绑定驱动 + config 定义 clean 命令后，同款 git diff 静默创建 marker 文件；阳性对照确认</td><td>filterNeutralizeArgs 枚举仓库 filter 配置并逐个 -c 置空 clean/smudge/process；TestFilterDriverNotExecuted 含阳性对照；e2e 复验</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.1"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.2</td><td><span class="badge crit">Critical</span></td><td><code>internal/git/git.go:43-61</code></td><td>部分克隆懒加载取回对象时执行仓库 config 的 core.sshCommand/credential.helper</td><td>实证：partial clone + ssh remote + 缺对象时 git diff 创建 marker</td><td>gitEnv 追加 GIT_NO_LAZY_FETCH=1（git≥2.39 生效，低版本忽略无副作用），缺对象时报错而非自动取回</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.2"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.3</td><td><span class="badge blocked">Important</span></td><td><code>internal/git/git.go:162-174</code></td><td>hasHead 超时仍被 ExitError 吞成'无 HEAD'：超时强杀返回 signal: killed 正是 ExitError</td><td>两个角度独立实证；与函数注释'执行异常返回错误'契约矛盾；超时场景 GetCommits 静默空列表、working diff 静默 untracked-only</td><td>errors.As 前先查 ctx.Err()；与 runGitCapped 同款的检测模式</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.3"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.4</td><td><span class="badge blocked">Important</span></td><td><code>web/src/App.vue:347,559-580</code></td><td>重置窗口内 commit 下拉可交互：用户改 hash 被 watcher 静默吞掉，窗口代码继续读到新 hash 而评论仍属旧 review，保存即错位</td><td>窗口随大 diff 可达秒级，UI 已渲染可交互</td><td>切换期间下拉 disabled（与忙碌按钮同款模式）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.4"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.5</td><td><span class="badge blocked">Important</span></td><td><code>web/src/App.vue:628-637</code></td><td>onSaveTemplate 无快照守卫：保存往返期间的新输入被响应强制清脏，与 saveReview 已确立的不变量不一致</td><td>对照 saveReview 的 snapshot 引用比较</td><td>快照比较 + savingTemplate 重入锁</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.5"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.6</td><td><span class="badge blocked">Important</span></td><td><code>internal/review/store.go:40-44; internal/server/server.go 三处</code></td><td>旧版 []Comment 格式兜底解析重复 4 处（守则'一个功能只有一个函数实现'）</td><td>四处注释中英混用语义略有差异</td><td>review.ParsePersisted 收敛（PersistedReview 优先、legacy 数组兜底、均失败报错），store/detail/export 三处复用</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.6"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.7</td><td><span class="badge blocked">Important</span></td><td><code>internal/server/server.go:280-297</code></td><td>review.json 的 ID 口径双份：列表用 default、currentReviewID 返回 ''，换算成本转嫁前端 3 处</td><td>前端 expectedID 换算 + formatReviewLabel 特判 + review_default.json 死链跳过</td><td>currentReviewIDLocked 统一返回 default；前端空值视为 default（兼容旧文件）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.7"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.8</td><td><span class="badge blocked">Important</span></td><td><code>internal/git/git.go:144-151; internal/git/parser.go:30-34</code></td><td>CommitInfo 空 subject 整体归零；纯 mode 变更+空格文件名错位</td><td>TrimSpace 吃掉尾部空行致行数不足；mode-only 无 ---/+++ 与 rename 行兜底</td><td>TrimSuffix 单行换行保留空 subject 行；diff --git 头按最后一个 ' b/' 分隔解析（含测试）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.8"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.9</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/DiffViewer.vue:51,84,120</code></td><td>路径推导三处内联拷贝且兜底不一致（'' vs 'unknown'），徽标计数与面板过滤错位</td><td>utils/diff.js 已建 fileDisplayPath 统一出处</td><td>DiffViewer 三处统一走 fileDisplayPath</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.9"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.10</td><td><span class="badge blocked">Important</span></td><td><code>AGENTS.md:6 vs git log 7610b04/1aec4ed; docs/git-commit-rules.md</code></td><td>契约：提交信息含轮次标注（违反新规则）、perf type 未入 type 列表、jiralink 说明缺失、规则 5 适用范围不明</td><td>git log 实证；文档编号断裂</td><td>AGENTS.md 单独入库（规则生效）；rebase 改写两条 subject 去除轮次标注；git-commit-rules.md 补 perf type、3.1.4 jiralink、澄清规则 5 仅约束结构化参数</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-2.10"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+</table>
+<h2>四、Suggestion 打包</h2>
+<div class="card"><h3>wtf2pr（已修复）</h3>
+<table><tr><th>编号</th><th>位置</th><th>问题与建议</th><th>处理</th></tr>
+<tr><td>3.1</td><td><code>internal/server/server.go:543-550; pkg/models/models.go:55</code></td><td>/api/diff 不传 type 的 binding required 死分支 → 移除 required 默认 working；非法 commit 引用 500→400（ErrInvalidCommitRef 哨兵）；含测试</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.1"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.2</td><td><code>internal/git/git.go:88-96</code></td><td>runGitCapped 截断路径吞 werr（git 中途失败+输出超 cap 时残缺数据当正常结果）→ werr 提前于截断分支报错</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.2"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.3</td><td><code>internal/server/server.go</code></td><td>handleSaveTemplate 并发写共享 tmp 路径 → templateMu 互斥；handleGetReviews 双读锁交错 → 单锁取双字段；dataRoot 预存权限收紧</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.3"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.4</td><td><code>web/src</code></td><td>前端一揽子：onViewHistoryReview 加 viewSeq 乱序守卫；cancelDiff 复位 error；loadCommits 失败清空页码+commitsLoaded 标志；WorkdirModal 未保存文案泛化+不可达 unauth 分支清理；switch 成功但加载失败的提示区分；isDirty 收紧为 !saved</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.4"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.5</td><td><code>cmd/wtf2pr/main.go:99</code></td><td>非 loopback 绑定 stderr 醒目告警（明文 HTTP + token 暴露面）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.5"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.6</td><td><code>internal/server/server_test.go:56-74</code></td><td>setupTestServer 与 setupRestrictedServer 样板重复 → 已存在单一 helper 模式，本次保持（改动面控制）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.6"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.7</td><td><code>internal/git/git.go:306-347</code></td><td>CommitsExist/IsGitRepo 超时静默降级全 false：best-effort 方向安全，接受（Q3）</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-workspace-auth-ui-202610141420-3.7"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+</table></div>
+<h2>五、已有决策复核（重报项，附证据，不再处理除非人类改判）</h2>
+<table><tr><th>事项</th><th>决策出处</th><th>本次重报与新证据</th></tr>
+<tr><td>R1-R3 全部已定决策</td><td>前三轮报告</td><td>本轮无重报</td></tr>
+<tr><td>提交信息规则</td><td>AGENTS.md（本轮入库）</td><td>禁轮次编号、一次提交一个问题、遵循 git-commit-rules.md 格式（perf 已补入 type 列表）</td></tr>
+<tr><td>历史改写</td><td>本轮执行</td><td>rebase 改写了两条含轮次标注的 subject；分支此前已推送 origin，本地与远端分叉，force-push 与否由人类决定</td></tr>
+</table>
+<h2>六、做得好的</h2><ul>
+<li>安全实证带阳性对照成为固定范式：filter/gpg/textconv 三个 RCE 向量的测试都先证明裸 git 会中招再证明工具不中招</li>
+<li>单一子进程收口（gitCmd）让'逐一审计 exec.Command'可穷尽，新向量修复单点生效——安全架构最值钱的设计</li>
+<li>提交规范闭环认真：规则入 AGENTS.md、历史 subject 改写、type 列表与文档缺口同步补齐</li>
+<li>问题曲线持续收敛：Critical 6→1→1→1（均为实证级安全向量），简洁性/契约类发现逐轮减少</li>
+</ul>
+<h2>七、验证记录（实跑）</h2>
+<table><tr><th>方</th><th>实跑内容</th><th>结果</th></tr>
+<tr><td>正确性角度</td><td>go build/vet/gofmt + go test -race -count=1 ./internal/... + 5 项实证</td><td>105 测试全 PASS（直接退出码 0）</td></tr>
+<tr><td>安全角度</td><td>filter.clean 与懒加载 sshCommand 沙箱实证 + 缓解方案对照验证</td><td>两向量均可复现，修复后 e2e 复核不触发</td></tr>
+<tr><td>前端角度</td><td>npm run lint / build + 契约逐字段比对</td><td>退出码 0；client.js 16 端点契约一致</td></tr>
+<tr><td>契约角度</td><td>unit_tests.md 集合 diff + git log 提交信息合规审查</td><td>99→105 实名同步；提交规范问题已闭环（AGENTS 入库+历史改写+文档回写）</td></tr>
+<tr><td>主 agent</td><td>filter RCE e2e 阳性对照、全量 -race/lint/build、rebase 历史改写</td><td>全部符合预期</td></tr>
+</table>
+<p class="meta">分支此前已被推送至 origin/feat/workspace-auth-ui，本轮 rebase 改写两条 subject 后本地领先且与远端分叉；force-push 需要人类决策，未执行。</p>
+<h2>八、后续步骤</h2><ul>
+<li>人类决策：force-push 更新远端分支，或放弃远端重新推送</li>
+<li>合并 feat/workspace-auth-ui → main；合并前代码冻结态终检（go test -race + npm build）</li>
+<li>可选后续：CORS 收紧（引入 cookie 凭证时必修）；review 元数据与 diff 快照分文件存储</li>
+</ul>
+<script type="application/json" id="review-data">{"id": "R4-20261014", "title": "wtf2pr feat/workspace-auth-ui 全面 Review（第四轮）", "date": "2026-10-14", "machine": "开发机", "method": "5 路 fresh-eyes（正确性/简洁性/安全性能/前端全维度/契约一致性）+ 主 agent 综合判别", "task": "wtf2pr-workspace-auth-ui", "ts": "202610141420", "report_path": "docs/reviews/2026-10-13-wtf2pr-full-review/R4-20261014.html", "projects": ["wtf2pr"], "scopes": [{"repo": "wtf2pr", "base": "main", "branch": "feat/workspace-auth-ui", "stat": "32 文件 +3451/-463（7 commits）+ 修复 15 文件", "commits": "81e8d56..7610b04（历史已改写去除轮次标注）"}], "out_of_scope": "无", "verdict": "本轮捕获 1 个 Critical（filter.clean/process 为第三个同族恶意仓库 RCE 漏网向量，已实证并用枚举置空法封堵）与部分克隆懒加载 core.sshCommand RCE（GIT_NO_LAZY_FETCH 封堵）、hasHead 超时误判空仓库、重置窗口内下拉可交互、onSaveTemplate 无快照守卫等问题，全部修复并配阳性对照测试；契约角度发现的提交规范问题（轮次标注/perf type 未入列/规则文档缺口）已通过 AGENTS.md 入库、历史改写与文档回写闭环。105 个测试 -race 全绿，可合并。", "verdict_level": "ok", "items": [{"uid": "wtf2pr-workspace-auth-ui-202610141420-1.1", "num": "1.1", "sec": "待确认", "title": "非 loopback 绑定仅 stderr 告警不拦截", "status": "decided"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-1.2", "num": "1.2", "sec": "待确认", "title": "untracked 聚合上限定为 20MB（原 ~500MB 组合上限）", "status": "decided"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-1.3", "num": "1.3", "sec": "待确认", "title": "CommitsExist/IsGitRepo 超时静默降级为全 false", "status": "accepted"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-1.4", "num": "1.4", "sec": "待确认", "title": "isDirty 语义收紧为 !saved（删光评论的删除意图也受保护）", "status": "decided"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-1.5", "num": "1.5", "sec": "待确认", "title": "历史 review 无 ReviewID 字段的 legacy 文件，切换校验以 '' 视为 default 仍可能误报", "status": "accepted"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.1", "num": "2.1", "sec": "发现", "title": "恶意仓库 filter.clean/process RCE：git diff HEAD 会执行仓库 config 的 filter 驱动（第三个同族漏网向量）", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.2", "num": "2.2", "sec": "发现", "title": "部分克隆懒加载取回对象时执行仓库 config 的 core.sshCommand/credential.helper", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.3", "num": "2.3", "sec": "发现", "title": "hasHead 超时仍被 ExitError 吞成'无 HEAD'：超时强杀返回 signal: killed 正是 ExitError", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.4", "num": "2.4", "sec": "发现", "title": "重置窗口内 commit 下拉可交互：用户改 hash 被 watcher 静默吞掉，窗口代码继续读到新 hash 而评论仍属旧 review，保存即错位", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.5", "num": "2.5", "sec": "发现", "title": "onSaveTemplate 无快照守卫：保存往返期间的新输入被响应强制清脏，与 saveReview 已确立的不变量不一致", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.6", "num": "2.6", "sec": "发现", "title": "旧版 []Comment 格式兜底解析重复 4 处（守则'一个功能只有一个函数实现'）", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.7", "num": "2.7", "sec": "发现", "title": "review.json 的 ID 口径双份：列表用 default、currentReviewID 返回 ''，换算成本转嫁前端 3 处", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.8", "num": "2.8", "sec": "发现", "title": "CommitInfo 空 subject 整体归零；纯 mode 变更+空格文件名错位", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.9", "num": "2.9", "sec": "发现", "title": "路径推导三处内联拷贝且兜底不一致（'' vs 'unknown'），徽标计数与面板过滤错位", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-2.10", "num": "2.10", "sec": "发现", "title": "契约：提交信息含轮次标注（违反新规则）、perf type 未入 type 列表、jiralink 说明缺失、规则 5 适用范围不明", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.1", "num": "3.1", "sec": "Suggestion", "title": "/api/diff 不传 type 的 binding required 死分支 → 移除 required 默认 working；非法 commit 引用 500→400（ErrInvalidCommitRef 哨兵）；含测试", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.2", "num": "3.2", "sec": "Suggestion", "title": "runGitCapped 截断路径吞 werr（git 中途失败+输出超 cap 时残缺数据当正常结果）→ werr 提前于截断分支报错", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.3", "num": "3.3", "sec": "Suggestion", "title": "handleSaveTemplate 并发写共享 tmp 路径 → templateMu 互斥；handleGetReviews 双读锁交错 → 单锁取双字段；dataRoot 预存权限收紧", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.4", "num": "3.4", "sec": "Suggestion", "title": "前端一揽子：onViewHistoryReview 加 viewSeq 乱序守卫；cancelDiff 复位 error；loadCommits 失败清空页码+commitsLoaded 标志；WorkdirModal 未保存文案泛化+不可达 unauth 分支清理；switch 成功但加载失败的提示区分；isDirty 收紧为 !saved", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.5", "num": "3.5", "sec": "Suggestion", "title": "非 loopback 绑定 stderr 醒目告警（明文 HTTP + token 暴露面）", "status": "fixed"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.6", "num": "3.6", "sec": "Suggestion", "title": "setupTestServer 与 setupRestrictedServer 样板重复 → 已存在单一 helper 模式，本次保持（改动面控制）", "status": "accepted"}, {"uid": "wtf2pr-workspace-auth-ui-202610141420-3.7", "num": "3.7", "sec": "Suggestion", "title": "CommitsExist/IsGitRepo 超时静默降级全 false：best-effort 方向安全，接受（Q3）", "status": "accepted"}], "decisions": [{"topic": "R1-R3 全部已定决策", "source": "前三轮报告", "note": "本轮无重报"}, {"topic": "提交信息规则", "source": "AGENTS.md（本轮入库）", "note": "禁轮次编号、一次提交一个问题、遵循 git-commit-rules.md 格式（perf 已补入 type 列表）"}, {"topic": "历史改写", "source": "本轮执行", "note": "rebase 改写了两条含轮次标注的 subject；分支此前已推送 origin，本地与远端分叉，force-push 与否由人类决定"}]}</script>
+<script>
+const STORE_KEY = "review-feedback-v1";
+const REVIEW_ID = "R4-20261014";
+const REVIEW_TITLE = "wtf2pr feat/workspace-auth-ui 全面 Review（第四轮）";
+
+function loadStore() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+function saveStore(s) { localStorage.setItem(STORE_KEY, JSON.stringify(s)); }
+function reviewData() {
+  const s = loadStore();
+  if (!s[REVIEW_ID]) s[REVIEW_ID] = { items: {} };
+  return s;
+}
+function itemState(id) {
+  const d = reviewData()[REVIEW_ID].items[id];
+  return d || null;
+}
+function setItem(id, patch) {
+  const s = reviewData();
+  const cur = s[REVIEW_ID].items[id] || {};
+  s[REVIEW_ID].items[id] = Object.assign({}, cur, patch, { updatedAt: new Date().toISOString() });
+  saveStore(s);
+  render();
+}
+function removeItem(id) {
+  const s = reviewData();
+  delete s[REVIEW_ID].items[id];
+  saveStore(s);
+  render();
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// 弹窗基础设施：mask 点击空白处不关闭（防误触丢内容），仅按钮/Esc 关闭
+function openModal(id) {
+  document.getElementById(id).classList.add("open");
+  document.addEventListener("keydown", escClose);
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove("open");
+  document.removeEventListener("keydown", escClose);
+}
+function escClose(e) {
+  if (e.key === "Escape") document.querySelectorAll(".modal-mask.open").forEach(m => m.classList.remove("open"));
+}
+function render() {
+  const items = reviewData()[REVIEW_ID].items;
+  let done = 0, noted = 0;
+  document.querySelectorAll("[data-item]").forEach(box => {
+    const id = box.getAttribute("data-item");
+    const st = items[id];
+    const row = box.closest("tr");
+    const stateEl = box.querySelector(".state");
+    const bodyEl = box.querySelector(".fb-body");
+    if (st && (st.note || st.done)) {
+      noted += st.note ? 1 : 0;
+      done += st.done ? 1 : 0;
+      stateEl.innerHTML = st.done
+        ? '<span class="badge done">已处理</span>'
+        : '<span class="badge blocked">已建议</span>';
+      if (row) row.classList.toggle("done-row", !!st.done);
+      bodyEl.innerHTML =
+        (st.note ? `<div class="note-view">${esc(st.note)}<span class="t">${esc(fmtTime(st.updatedAt))}</span></div>` : "") +
+        `<div class="fb-head" style="margin-top:6px">
+          <button class="tb" onclick="editNote('${id}')">${st.note ? "修改建议" : "写建议"}</button>
+          <button class="tb" onclick="setItem('${id}', {done: ${st.done ? "false" : "true"}})">${st.done ? "重开" : "标记已处理"}</button>
+          <button class="tb danger" onclick="removeItem('${id}')">删除</button>
+        </div>`;
+    } else {
+      stateEl.innerHTML = "";
+      if (row) row.classList.remove("done-row");
+      bodyEl.innerHTML = `<div class="fb-head"><button class="tb" onclick="editNote('${id}')">写建议</button></div>`;
+    }
+  });
+  const stats = document.getElementById("fb-stats");
+  if (stats) stats.textContent = `本 review 已建议 ${noted} 条 · 已处理 ${done} 条`;
+  // 管理弹窗若开着，同步刷新
+  const mgr = document.getElementById("mgr-modal");
+  if (mgr && mgr.classList.contains("open")) renderManage();
+}
+function editNote(id) {
+  const box = document.querySelector(`[data-item="${id}"] .fb-body`);
+  const st = itemState(id) || {};
+  box.innerHTML =
+    `<textarea id="ta-${id}" placeholder="输入处理建议…">${esc(st.note || "")}</textarea>
+     <div class="fb-head" style="margin-top:6px">
+       <button class="tb" onclick="saveNote('${id}')">保存</button>
+       <button class="tb" onclick="saveNote('${id}', true)">保存并标记已处理</button>
+       <button class="tb" onclick="render()">取消</button>
+     </div>`;
+  document.getElementById(`ta-${id}`).focus();
+}
+function saveNote(id, andDone) {
+  const v = document.getElementById(`ta-${id}`).value.trim();
+  setItem(id, { note: v, done: andDone ? true : (itemState(id) || {}).done || false });
+}
+function mdEscape(s) { return String(s == null ? "" : s); }
+function mdCell(s) { return mdEscape(s).replace(/\|/g, "\\|").replace(/\s*\n+\s*/g, " "); }
+const STATUS_TEXT = { fixed: "按建议已修复", decided: "已定方案", accepted: "保持现状" };
+function buildMarkdown() {
+  const meta = JSON.parse(document.getElementById("review-data").textContent);
+  const items = reviewData()[REVIEW_ID].items;
+  const L = [];
+  L.push(`# ${meta.title}`);
+  L.push("");
+  L.push("## Meta");
+  L.push(`- 任务名称：${meta.task}`);
+  L.push(`- 涉及项目：${(meta.projects || []).join(", ")}`);
+  L.push(`- Review 日期：${meta.date}`);
+  L.push(`- Review 文件：${meta.report_path}`);
+  L.push(`- 时间戳：${meta.ts}`);
+  L.push(`- 总体判定：${meta.verdict}`);
+  L.push(`- 导出时间：${fmtTime(new Date().toISOString())}（含 localStorage 中的处理建议）`);
+  L.push("");
+  L.push("| 问题编号 | 状态 + 处理方案 |");
+  L.push("| --- | --- |");
+  (meta.items || []).forEach(it => {
+    const st = items[it.uid];
+    const statusText = STATUS_TEXT[it.status] || "";
+    let cell;
+    if (st && st.done) {
+      cell = "[已处理]" + (st.note ? " " + st.note : (statusText ? " " + statusText : ""));
+    } else if (st && st.note) {
+      cell = "[未处理] " + st.note;
+    } else if (statusText) {
+      cell = "[已处理] " + statusText;
+    } else {
+      cell = "[未处理]";
+    }
+    L.push(`| ${it.uid} | ${mdCell(cell)} |`);
+  });
+  return L.join("\n");
+}
+function exportMarkdown() {
+  document.getElementById("md-view").value = buildMarkdown();
+  document.getElementById("copy-hint").textContent = "";
+  openModal("md-modal");
+}
+function copyMarkdown() {
+  const ta = document.getElementById("md-view");
+  const hint = document.getElementById("copy-hint");
+  const ok = () => { hint.textContent = "已复制"; };
+  const fallback = () => {
+    ta.focus(); ta.select();
+    try { hint.textContent = document.execCommand("copy") ? "已复制" : "复制失败，请手动全选复制"; }
+    catch (e) { hint.textContent = "复制失败，请手动全选复制"; }
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(ta.value).then(ok, fallback);
+  } else {
+    fallback(); // 非 HTTPS 环境 navigator.clipboard 不可用
+  }
+}
+// 数据管理：跨 review 查看/逐条删/按 review 删/全部删
+function manageData() {
+  renderManage();
+  openModal("mgr-modal");
+}
+function renderManage() {
+  const s = loadStore();
+  const host = document.getElementById("mgr-body");
+  const ids = Object.keys(s).filter(k => s[k] && s[k].items && Object.keys(s[k].items).length > 0);
+  if (ids.length === 0) {
+    host.innerHTML = '<div class="mgr-empty">暂无存储的建议数据</div>';
+    return;
+  }
+  host.innerHTML = ids.map(rid => {
+    const entries = Object.entries(s[rid].items);
+    const cur = rid === REVIEW_ID ? ' <span class="badge done">当前页面</span>' : "";
+    const rows = entries.map(([iid, st]) => {
+      const state = st.done ? '<span class="badge done">已处理</span>' : '<span class="badge blocked">已建议</span>';
+      const note = st.note ? esc(st.note) : '<span style="color:var(--muted)">（无文字建议）</span>';
+      return `<div class="mgr-item">
+        <span class="iid">${esc(iid)}</span> ${state}
+        <span class="nt">${note}</span>
+        <span class="t">${esc(fmtTime(st.updatedAt))}</span>
+        <button class="tb danger" onclick="mgrDeleteItem('${esc(rid)}','${esc(iid)}')">删除</button>
+      </div>`;
+    }).join("");
+    return `<div class="mgr-review" data-rid="${esc(rid)}">
+      <div class="mgr-review-head" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="rid">${esc(rid)}</span>${cur}
+        <span class="cnt">${entries.length} 条（点击展开）</span>
+        <button class="tb danger" onclick="event.stopPropagation(); mgrDeleteReview('${esc(rid)}')">删除该 review 全部</button>
+      </div>
+      <div class="mgr-items">${rows}</div>
+    </div>`;
+  }).join("");
+}
+function mgrDeleteItem(rid, iid) {
+  const s = loadStore();
+  if (s[rid] && s[rid].items) delete s[rid].items[iid];
+  saveStore(s);
+  renderManage(); render();
+}
+function mgrDeleteReview(rid) {
+  if (!confirm(`确定删除 review「${rid}」的全部建议数据？`)) return;
+  const s = loadStore();
+  delete s[rid];
+  saveStore(s);
+  renderManage(); render();
+}
+function mgrDeleteAll() {
+  if (!confirm("确定删除全部 review 的全部建议数据？（不可恢复）")) return;
+  localStorage.removeItem(STORE_KEY);
+  renderManage(); render();
+}
+document.addEventListener("DOMContentLoaded", render);
+</script>
+</body></html>

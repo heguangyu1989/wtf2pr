@@ -45,7 +45,7 @@
   - 执行 `git log` + `git rev-list --count` 实现分页 Commit 列表查询（`page_size` 上限 100）。
   - 内置 Unified Diff 解析器，将 diff 文本解析为结构化数据（文件 → Hunk → 行；文件名以 `--- `/`+++ ` 行为准，支持含空格文件名）。
   - diff 类输出（`git diff HEAD` / `git show -p`）经 `runGitCapped` 限制在 20MB（超限排空管道后截断并标记 `DiffResponse.Truncated`）。
-  - 安全基线：commit 引用白名单校验 + `--end-of-options` 防选项注入；`--no-ext-diff --no-textconv` + 禁用 fsmonitor hook + `-c log.showSignature=false` 防恶意仓库配置执行命令（textconv / ext-diff / gpg.program）；`core.quotePath=false` 防文件名转义错位；git 子进程环境变量白名单过滤（去除 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG*` 等劫持向量）；单个子进程 60s 超时（`gitCmdTimeout`）；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
+  - 安全基线：commit 引用白名单校验 + `--end-of-options` 防选项注入；`--no-ext-diff --no-textconv` + 禁用 fsmonitor hook + `-c log.showSignature=false` + 枚举置空 `filter.<driver>.clean/smudge/process` 防恶意仓库配置执行命令（textconv / ext-diff / gpg.program / filter 驱动）；`GIT_NO_LAZY_FETCH=1` 防部分克隆懒加载触发 `core.sshCommand`/`credential.helper`；`core.quotePath=false` 防文件名转义错位；git 子进程环境变量白名单过滤（去除 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG*` 等劫持向量）；单个子进程 60s 超时（`gitCmdTimeout`）；批量 commit 存在性检查走单次 `git cat-file --batch-check`。
   - merge commit 经 `-m --first-parent` 展示与第一父的差异；空仓库（无 HEAD）working diff 仅返回 untracked、commits 返回空列表。
 - **Review 模块**：
   - 内存存储 + JSON 文件持久化（临时文件 + 原子替换，权限 0600），线程安全（`sync.RWMutex`）。

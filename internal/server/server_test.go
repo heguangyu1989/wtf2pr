@@ -1490,3 +1490,43 @@ func TestHandleGetReviewDetailLegacyFormat(t *testing.T) {
 		t.Errorf("expected 1 legacy comment, got %v", comments)
 	}
 }
+
+func TestHandleGetDiffDefaultType(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	// 不传 type 参数应默认 working 而非 400
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/diff", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 without type param, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	data := resp.Data.(map[string]interface{})
+	if data["type"] != "working" {
+		t.Errorf("expected default type=working, got %v", data["type"])
+	}
+}
+
+func TestHandleGetDiffInvalidCommitRef(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	// 非法 commit 引用是客户端错误，应 400 而非 500
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/diff?type=commit&commit=--output=/tmp/x", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid commit ref, got %d", w.Code)
+	}
+	// commit 类型但缺少 commit 参数同样应 400
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/diff?type=commit", nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty commit, got %d", w2.Code)
+	}
+}

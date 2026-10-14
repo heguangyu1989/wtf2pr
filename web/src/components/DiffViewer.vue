@@ -48,7 +48,7 @@
             @click="selectedIndex = startIndex + i"
           >
             <div class="flex items-center justify-between">
-              <span class="truncate font-mono text-xs">{{ f.newFile || f.oldFile }}</span>
+              <span class="truncate font-mono text-xs">{{ fileDisplayPath(f) }}</span>
               <span
                 v-if="fileReviewCount(f) > 0"
                 class="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white font-medium"
@@ -81,7 +81,7 @@
       />
       <DiffFile
         v-else-if="selectedFile"
-        :key="selectedFile.newFile || selectedFile.oldFile"
+        :key="fileDisplayPath(selectedFile)"
         :file="selectedFile"
         :comments="comments"
         @update:comments="$emit('update:comments', $event)"
@@ -95,6 +95,7 @@
 import { ref, computed, watch } from 'vue'
 import DiffFile from './DiffFile.vue'
 import ReadonlyDiffFile from './ReadonlyDiffFile.vue'
+import { fileDisplayPath } from '../utils/diff.js'
 
 const props = defineProps({
   diffData: { type: Object, default: null },
@@ -117,7 +118,7 @@ const pagedFiles = computed(() => props.diffData?.files?.slice(startIndex.value,
 const selectedFile = computed(() => props.diffData?.files?.[selectedIndex.value] || null)
 
 function fileReviewCount(file) {
-  const path = file.newFile || file.oldFile || ''
+  const path = fileDisplayPath(file)
   return props.comments.filter(c => c.filePath === path).length
 }
 

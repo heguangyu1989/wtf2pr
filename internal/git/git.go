@@ -26,6 +26,9 @@ var maxUntrackedFileBytes = int64(1 << 20) // 1MB
 // maxUntrackedFiles 限制 working diff 中包含的未跟踪文件数量，超限截断（var 以便测试调小）
 var maxUntrackedFiles = 500
 
+// maxUntrackedTotalBytes 限制未跟踪文件内容的聚合大小，超限截断（var 以便测试调小）
+var maxUntrackedTotalBytes = int64(20 << 20) // 20MB
+
 // gitCmdTimeout 限制单个 git 子进程执行时长，防止慢/挂起的仓库拖垮服务（var 以便测试调小）
 var gitCmdTimeout = 60 * time.Second
 
@@ -57,6 +60,8 @@ func gitEnv() []string {
 		}
 		env = append(env, kv)
 	}
+	// 禁止部分克隆懒加载：缺对象时取回子进程会执行仓库 config 的 core.sshCommand / credential.helper（git ≥ 2.39 生效，低版本忽略无副作用）
+	env = append(env, "GIT_NO_LAZY_FETCH=1")
 	return env
 }
 
@@ -85,6 +90,10 @@ func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, false, fmt.Errorf("git %s timed out: %w", strings.Join(args, " "), context.DeadlineExceeded)
 	}
+	// git 中途失败时输出即使是截断的也必须报错，不能把残缺数据当正常结果
+	if werr != nil {
+		return nil, false, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), werr, strings.TrimSpace(stderrBuf.String()))
+	}
 	if truncated {
 		// 截断到最后一个完整行，避免半截行进入解析器
 		if i := bytes.LastIndexByte(buf[:maxGitOutputBytes], '\n'); i >= 0 {
@@ -97,10 +106,40 @@ func runGitCapped(workDir string, args ...string) ([]byte, bool, error) {
 	if rerr != nil {
 		return nil, false, rerr
 	}
-	if werr != nil {
-		return nil, false, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), werr, strings.TrimSpace(stderrBuf.String()))
-	}
 	return buf, false, nil
+}
+
+// filterNeutralizeArgs 枚举仓库中配置的 filter 驱动，生成将其 clean/smudge/process 置空的 -c 参数。
+// 仓库 config 不可信：filter.<driver>.clean/smudge/process 会在 git diff 工作区文件时执行任意命令
+func filterNeutralizeArgs(workDir string) []string {
+	cmd, _, cancel := gitCmd(workDir, "config", "--get-regexp", `^filter\.`)
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		// 无 filter 配置时 git config --get-regexp 返回非零，属正常情况
+		return nil
+	}
+	drivers := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		// key 形式 filter.<driver>.<prop>，driver 不允许包含点号（git 配置段约束）
+		parts := strings.SplitN(fields[0], ".", 3)
+		if len(parts) == 3 {
+			drivers[parts[1]] = true
+		}
+	}
+	var args []string
+	for d := range drivers {
+		args = append(args,
+			"-c", "filter."+d+".clean=",
+			"-c", "filter."+d+".smudge=",
+			"-c", "filter."+d+".process=",
+		)
+	}
+	return args
 }
 
 // GetDiff 获取 git diff 数据
@@ -113,7 +152,8 @@ func GetDiff(workDir string, req models.DiffRequest) (*models.DiffResponse, erro
 
 func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 	// 1. 获取所有已跟踪文件的未提交变更（包含 staged + unstaged）；空仓库（无 HEAD）无 tracked diff，仅返回 untracked
-	// --no-ext-diff/--no-textconv 防止恶意仓库配置注入命令；core.fsmonitor=false 避免 fsmonitor hook
+	// --no-ext-diff/--no-textconv 防止恶意仓库配置注入命令；core.fsmonitor=false 避免 fsmonitor hook；
+	// filter 驱动的 clean/smudge/process 同样可注入命令，枚举仓库配置后逐个置空
 	files := make([]models.FileDiff, 0)
 	truncated := false
 	head, err := hasHead(workDir)
@@ -121,7 +161,10 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 		return nil, fmt.Errorf("git rev-parse failed: %w", err)
 	}
 	if head {
-		out, tr, err := runGitCapped(workDir, "-c", "core.quotePath=false", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "HEAD")
+		diffArgs := append(filterNeutralizeArgs(workDir),
+			"-c", "core.quotePath=false", "-c", "core.fsmonitor=false",
+			"diff", "--no-ext-diff", "--no-textconv", "HEAD")
+		out, tr, err := runGitCapped(workDir, diffArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("git diff failed: %w", err)
 		}
@@ -132,19 +175,21 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 		}
 	}
 
-	// 2. 补充尚未被 git 跟踪的 untracked 文件（数量与单文件大小均有限制）
+	// 2. 补充尚未被 git 跟踪的 untracked 文件（数量、单文件大小与聚合大小均有限制）
 	untracked, listingTruncated, err := getUntrackedFiles(workDir)
 	if err == nil {
 		if listingTruncated {
 			truncated = true
 		}
+		var totalBytes int64
 		for i, f := range untracked {
-			if i >= maxUntrackedFiles {
+			if i >= maxUntrackedFiles || totalBytes >= maxUntrackedTotalBytes {
 				truncated = true
 				break
 			}
 			fd, err := readUntrackedFileAsDiff(workDir, f)
 			if err == nil {
+				totalBytes += untrackedFileBytes(fd)
 				files = append(files, fd)
 			}
 		}
@@ -158,13 +203,31 @@ func getWorkingDiff(workDir string) (*models.DiffResponse, error) {
 	}, nil
 }
 
+// untrackedFileBytes 估算单个 untracked 文件 diff 的内存占用
+func untrackedFileBytes(fd models.FileDiff) int64 {
+	if fd.IsBinary {
+		return 0
+	}
+	var n int64
+	for _, h := range fd.Hunks {
+		for _, l := range h.Lines {
+			n += int64(len(l.Content)) + 1
+		}
+	}
+	return n
+}
+
 // hasHead 检查仓库是否存在 HEAD；明确的 git 层失败（如无 HEAD/非仓库）返回 (false, nil)，执行异常（超时等）返回错误
 func hasHead(workDir string) (bool, error) {
-	cmd, _, cancel := gitCmd(workDir, "rev-parse", "--verify", "HEAD")
+	cmd, ctx, cancel := gitCmd(workDir, "rev-parse", "--verify", "HEAD")
 	defer cancel()
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
+	}
+	// 超时被杀同样是 ExitError（signal: killed），必须先查 ctx 再按 git 层失败处理
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false, ctx.Err()
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -182,7 +245,8 @@ func getCommitDiff(workDir, commit string) (*models.DiffResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git show info failed: %w", err)
 	}
-	infoLines := strings.Split(strings.TrimSpace(string(infoOut)), "\n")
+	// 空 subject 的 commit 末尾是空行，TrimSpace 会把信息行数吃掉，只去尾部换行
+	infoLines := strings.Split(strings.TrimSuffix(string(infoOut), "\n"), "\n")
 	commitInfo := &models.CommitInfo{}
 	if len(infoLines) >= 4 {
 		commitInfo.Hash = infoLines[0]
@@ -324,13 +388,16 @@ func CommitsExist(workDir string, hashes []string) map[string]bool {
 // 仅允许 ASCII 常见字符，非 ASCII 分支名（UTF-8）会被拒绝——前端只传 git log 返回的 hex hash，属于有意的收窄
 var commitRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/^{}~-]{0,255}$`)
 
+// ErrInvalidCommitRef commit 引用非法（客户端输入问题，调用方应映射为 400）
+var ErrInvalidCommitRef = errors.New("invalid commit ref")
+
 // validateCommitRef 校验 commit 引用合法性
 func validateCommitRef(commit string) error {
 	if commit == "" {
-		return fmt.Errorf("commit hash is required")
+		return fmt.Errorf("%w: empty", ErrInvalidCommitRef)
 	}
 	if !commitRefPattern.MatchString(commit) {
-		return fmt.Errorf("invalid commit ref: %q", commit)
+		return fmt.Errorf("%w: %q", ErrInvalidCommitRef, commit)
 	}
 	return nil
 }

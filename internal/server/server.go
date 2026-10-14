@@ -5,7 +5,15 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/wtf2pr/wtf2pr/internal/config"
+	"github.com/wtf2pr/wtf2pr/internal/export"
+	"github.com/wtf2pr/wtf2pr/internal/git"
+	"github.com/wtf2pr/wtf2pr/internal/review"
+	"github.com/wtf2pr/wtf2pr/pkg/models"
 	"io/fs"
 	"net/http"
 	"os"
@@ -15,14 +23,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/wtf2pr/wtf2pr/internal/config"
-	"github.com/wtf2pr/wtf2pr/internal/export"
-	"github.com/wtf2pr/wtf2pr/internal/git"
-	"github.com/wtf2pr/wtf2pr/internal/review"
-	"github.com/wtf2pr/wtf2pr/pkg/models"
 )
 
 // Options 创建 server 的参数
@@ -45,6 +45,7 @@ type Server struct {
 	allowedDirs []string
 
 	mu         sync.RWMutex
+	templateMu sync.Mutex // handleSaveTemplate 原子写共享 tmp 路径的互斥
 	workDir    string
 	storageDir string
 	reviewFile string
@@ -275,9 +276,12 @@ func (s *Server) getReviewFile() string {
 	return s.reviewFile
 }
 
-// currentReviewIDLocked 与 currentReviewID 相同，但调用方必须已持有 s.mu（读或写）
+// currentReviewIDLocked 返回当前 review 的 ID（review.json 统一为 default）；调用方必须已持有 s.mu（读或写）
 func (s *Server) currentReviewIDLocked() string {
 	reviewFileName := filepath.Base(s.reviewFile)
+	if reviewFileName == "review.json" {
+		return defaultReviewID
+	}
 	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
 		return strings.TrimSuffix(strings.TrimPrefix(reviewFileName, "review_"), ".json")
 	}
@@ -545,6 +549,10 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 	}
 	diff, err := git.GetDiff(s.getWorkDir(), req)
 	if err != nil {
+		if errors.Is(err, git.ErrInvalidCommitRef) {
+			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
 	}
@@ -581,15 +589,11 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, models.APIResponse{Code: 404, Message: "review not found"})
 		return
 	}
-	var pr models.PersistedReview
-	if err := json.Unmarshal(data, &pr); err != nil {
-		// 旧版 []Comment 格式兜底：列表页对这些文件可见，详情页同样应可读
-		var comments []models.Comment
-		if lerr := json.Unmarshal(data, &comments); lerr != nil {
-			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + err.Error()})
-			return
-		}
-		pr = models.PersistedReview{Comments: comments}
+	var pr *models.PersistedReview
+	pr, err = review.ParsePersisted(data)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + err.Error()})
+		return
 	}
 	pr.Commit = strings.TrimSpace(pr.Commit)
 	pr.Type = inferReviewType(pr.Type, pr.Commit)
@@ -686,7 +690,10 @@ type reviewListMeta struct {
 
 func (s *Server) handleGetReviews(c *gin.Context) {
 	items := []models.ReviewListItem{}
-	dir := s.getStorageDir()
+	// 单次取锁获取两个字段，避免与 workdir 切换交错时用新仓库校验旧目录的 review
+	s.mu.RLock()
+	dir, workDir := s.storageDir, s.workDir
+	s.mu.RUnlock()
 	entries, err := os.ReadDir(dir)
 	if err == nil {
 		// 候选文件：默认 review.json（id 为 default）+ 命名 review_<id>.json
@@ -737,7 +744,7 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 			}
 		}
 		// 批量校验 commit 是否存在（单次 git 子进程，避免 N+1）
-		exists := git.CommitsExist(s.getWorkDir(), hashes)
+		exists := git.CommitsExist(workDir, hashes)
 		for i := range items {
 			if items[i].Type == string(models.DiffTypeCommit) && items[i].Commit != "" {
 				items[i].CommitExists = exists[items[i].Commit]
@@ -826,22 +833,16 @@ func (s *Server) handleExport(c *gin.Context) {
 			c.JSON(http.StatusNotFound, models.APIResponse{Code: 404, Message: "review not found"})
 			return
 		}
-		var pr models.PersistedReview
-		if err := json.Unmarshal(data, &pr); err == nil {
-			if pr.Diff != nil {
-				diff = pr.Diff
-			}
-			comments = pr.Comments
-		} else {
-			// 旧版 []Comment 格式：无内嵌 diff，仅评论可用于导出
-			var legacy []models.Comment
-			if lerr := json.Unmarshal(data, &legacy); lerr != nil {
-				// 与"不存在→404"同一语义：损坏文件不能静默回退导出成当前 review 的内容
-				c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + err.Error()})
-				return
-			}
-			comments = legacy
+		pr, perr := review.ParsePersisted(data)
+		if perr != nil {
+			// 与"不存在→404"同一语义：损坏文件不能静默回退导出成当前 review 的内容
+			c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: "review file corrupted: " + perr.Error()})
+			return
 		}
+		if pr.Diff != nil {
+			diff = pr.Diff
+		}
+		comments = pr.Comments
 	}
 
 	if diff == nil {
@@ -908,6 +909,9 @@ func (s *Server) handleSaveTemplate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
+	// 原子写共享固定 tmp 路径，并发保存需互斥
+	s.templateMu.Lock()
+	defer s.templateMu.Unlock()
 	if err := review.WriteFileAtomic(s.templatePath(), []byte(req.Content), 0600); err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
