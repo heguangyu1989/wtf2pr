@@ -1,0 +1,39 @@
+{
+  "review": {
+    "id": "R4-20261104-wtf2pr-directory-selection",
+    "title": "WTF2PR 目录选中与筛选 · 专项 fresh-eyes 评审",
+    "date": "2026-11-04",
+    "machine": "macOS 本地开发机",
+    "method": "正确性 / 简洁性 / 测试真实性 三路 fresh-eyes + 主 agent 实点验证",
+    "task": "wtf2pr-directory-selection",
+    "ts": "202611041620",
+    "report_path": "docs/tasks/2026-11-04-review-workspace/review-directory-selection.html",
+    "projects": ["wtf2pr"],
+    "scopes": [{"repo": "wtf2pr", "base": "最终交付后的目录交互增量", "branch": "feat/review-workspace-redesign", "stat": "FileExplorer、FileTreeNode、DiffViewer 及目录 SSR 测试", "commits": "未提交工作区"}],
+    "out_of_scope": "不改变三种 diff、Review 持久化和其他页面行为。",
+    "verdict": "目录选中/筛选已恢复并保留独立折叠/展开、全部文件恢复、平铺和右侧 diff 联动。三路 fresh-eyes 均无 Critical/Important。",
+    "verdict_level": "ok"
+  },
+  "summary_rows": [
+    {"cells": ["目录专项（3 路 fresh-eyes）", "0", "0", "无新增", "✓ 目录交互与 21 项前端测试通过"]}
+  ],
+  "confirmations": [],
+  "findings": [],
+  "suggestions": [],
+  "decisions": [
+    {"topic": "目录交互职责", "source": "用户明确需要目录选择", "note": "目录名用于选中筛选，箭头只负责折叠/展开；不移除任何原有能力。"}
+  ],
+  "strengths": [
+    "目录前缀使用完全相等或 directory + '/'，避免 src 与 src2 误匹配，嵌套事件逐层转发。",
+    "树形和平铺共享 filteredFiles，目录切换时右侧 diff 自动选择目录内首个文本 diff，切换来源时重置目录筛选。",
+    "SSR 测试与真实浏览器均覆盖选中、折叠/展开、全部恢复和平铺过滤。"
+  ],
+  "verifications": [
+    {"who": "前端测试", "what": "npm test", "result": "21/21 PASS，新增目录筛选 SSR 用例"},
+    {"who": "静态与构建", "what": "npm run lint、npm run build", "result": "全部 PASS"},
+    {"who": "主 agent 实点", "what": "目录名、折叠箭头、全部文件和平铺", "result": "选中 internal 后仅 internal 文件和 diff；折叠/展开正常；恢复全部正常；平铺过滤正常"},
+    {"who": "三路 fresh-eyes", "what": "正确性、简洁性、测试真实性", "result": "均无 Critical/Important"}
+  ],
+  "notes": "目录选择是用户明确要求的保留能力，本次为补齐交互，不是移除后降级替代。",
+  "next_steps": ["回写 README、system_design、unit_tests、实施计划和任务看板。", "执行最终 lint/test/build 并清理临时服务与 dist。"]
+}

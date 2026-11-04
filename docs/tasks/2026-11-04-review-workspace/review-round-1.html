@@ -1,0 +1,354 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WTF2PR 审查工作区重构 · 第一轮全面评审与修复</title><style>
+  :root {
+    --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --bg-soft: #f6f8fa;
+    --ok: #1a7f37; --ok-bg: #e6f4ea; --pending: #6e7781; --pending-bg: #f6f8fa;
+    --warn: #9a6700; --warn-bg: #fff8e6; --accent: #0969da; --crit: #b42318; --crit-bg: #fdecea;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--fg);
+         max-width: 1180px; margin: 0 auto; padding: 24px 32px 64px; line-height: 1.6; }
+  h1 { font-size: 24px; border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+  h2 { font-size: 18px; margin-top: 36px; border-left: 4px solid var(--accent); padding-left: 10px; }
+  h3 { font-size: 15px; margin-top: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); }
+  code { background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 1px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .done { color: var(--ok); background: var(--ok-bg); }
+  .pending { color: var(--pending); background: var(--pending-bg); border: 1px solid var(--border); }
+  .blocked { color: var(--warn); background: var(--warn-bg); }
+  .crit { color: var(--crit); background: var(--crit-bg); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+  .rule { background: var(--warn-bg); border: 1px solid #e3b341; border-radius: 8px; padding: 12px 16px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 3px 0; }
+  .small { font-size: 13px; }
+  /* 交互层 */
+  .toolbar { position: sticky; top: 0; z-index: 10; background: #fff; padding: 10px 0; border-bottom: 1px solid var(--border);
+             display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar .stats { color: var(--muted); font-size: 13px; margin-right: auto; }
+  button.tb { border: 1px solid var(--border); background: var(--bg-soft); border-radius: 6px; padding: 4px 12px;
+              font-size: 13px; cursor: pointer; }
+  button.tb:hover { border-color: var(--accent); color: var(--accent); }
+  button.tb.danger:hover { border-color: var(--crit); color: var(--crit); }
+  .fb { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; font-size: 13px; }
+  .fb-head { display: flex; gap: 8px; align-items: center; }
+  .fb-head .state { font-size: 12px; }
+  .fb textarea { width: 100%; min-height: 56px; margin-top: 6px; padding: 6px 8px; font-size: 13px;
+                 border: 1px solid var(--border); border-radius: 6px; font-family: inherit; }
+  .fb .note-view { white-space: pre-wrap; background: var(--bg-soft); border-radius: 6px; padding: 6px 8px; margin-top: 6px; }
+  .fb .note-view .t { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  tr.done-row > td { opacity: 0.62; }
+  /* 弹窗 */
+  .modal-mask { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,0.45); }
+  .modal-mask.open { display: flex; align-items: center; justify-content: center; }
+  .modal { background: #fff; border-radius: 10px; width: min(860px, 92vw); max-height: 86vh; display: flex;
+           flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+  .modal-head { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .modal-head strong { font-size: 15px; margin-right: auto; }
+  .modal-body { padding: 12px 16px; overflow: auto; }
+  .modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); }
+  .modal-foot .hint { margin-right: auto; color: var(--muted); font-size: 12px; align-self: center; }
+  .modal textarea.md-view { width: 100%; min-height: 52vh; padding: 8px 10px; font-size: 12.5px; line-height: 1.5;
+                 border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .mgr-review { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; }
+  .mgr-review-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--bg-soft); cursor: pointer; }
+  .mgr-review-head .rid { font-weight: 600; }
+  .mgr-review-head .cnt { color: var(--muted); font-size: 12px; margin-right: auto; }
+  .mgr-items { padding: 4px 12px 10px; display: none; }
+  .mgr-review.expanded .mgr-items { display: block; }
+  .mgr-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-top: 1px dashed var(--border); font-size: 13px; }
+  .mgr-item .iid { font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; }
+  .mgr-item .nt { flex: 1; white-space: pre-wrap; word-break: break-all; color: var(--fg); }
+  .mgr-item .t { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .mgr-empty { color: var(--muted); padding: 18px; text-align: center; }
+</style></head><body>
+<h1>WTF2PR 审查工作区重构 · 第一轮全面评审与修复</h1>
+<p class="meta">任务名称：wtf2pr-review-workspace｜ 时间戳：202611041358｜ 日期：2026-11-04（macOS 本地开发机）<br>评审方式：<strong>6 路 fresh-eyes 全面评审 + 主 agent 综合 + 修复后独立复查</strong><br>涉及项目：wtf2pr<br>报告文件：<code>docs/tasks/2026-11-04-review-workspace/review-round-1.html</code><br>评审范围（分支 vs master 全部变更，三点 diff）：<code>wtf2pr 008d392（工作区全部变更）...feat/review-workspace-redesign</code>（前后端实现、测试、文档与自托管字体，commits 未提交工作区，无三点提交 diff）<br>范围外：未授权 commit/push/MR；性能上限和默认监听威胁模型未擅自改变；旧 []Comment 格式统一加载列为存量技术债。</p>
+<div class="toolbar"><span class="stats" id="fb-stats"></span><button class="tb" onclick="exportMarkdown()">导出 Markdown（含建议）</button><button class="tb" onclick="manageData()">数据管理</button></div>
+<div class="modal-mask" id="md-modal"><div class="modal"><div class="modal-head"><strong>导出 Markdown（含建议）</strong><button class="tb" onclick="closeModal('md-modal')">关闭</button></div><div class="modal-body"><textarea id="md-view" class="md-view" readonly></textarea></div><div class="modal-foot"><span class="hint" id="copy-hint"></span><button class="tb" onclick="copyMarkdown()">复制</button><button class="tb" onclick="closeModal('md-modal')">关闭</button></div></div></div><div class="modal-mask" id="mgr-modal"><div class="modal"><div class="modal-head"><strong>建议数据管理（本浏览器 localStorage 全部 review）</strong><button class="tb" onclick="closeModal('mgr-modal')">关闭</button></div><div class="modal-body" id="mgr-body"></div><div class="modal-foot"><span class="hint">数据仅存于当前浏览器 localStorage，按 review id 隔离</span><button class="tb danger" onclick="mgrDeleteAll()">全部删除</button><button class="tb" onclick="closeModal('mgr-modal')">关闭</button></div></div></div>
+<h2>一、总体判定</h2>
+<div class="rule"><strong>第一轮发现的 Critical/Important 已全部修复并经新的 fresh-eyes 实例复查，无未解决 Critical/Important。默认监听鉴权、全文 diff 重算、大小上限和服务端取消传播留作人类决策。</strong></div>
+<table><tr><th>仓 / 角度</th><th>Important</th><th>待确认</th><th>Suggestion</th><th>结论</th></tr>
+<tr><td>wtf2pr（6 路全面 + 修复复查）</td><td>18 组已修复</td><td>4 项待决策</td><td>3 项记录</td><td>◐ 修复后通过，进入第二轮</td></tr>
+</table>
+<h2>二、待人类确认事项（点击条目可填写建议）</h2>
+<table><tr><th>编号</th><th>事项</th><th>背景与证据</th><th>选项/建议</th><th>处理</th></tr>
+<tr><td>1.1</td><td><strong>默认监听与 CORS/鉴权</strong></td><td>当前默认 0.0.0.0 且 CORS *，全文接口扩大了网络可读取的数据量。</td><td>建议默认改 127.0.0.1，远程模式显式开启并加 token；是否改变既有默认由人类决定。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-1.1"><div class="fb-head"><span class="state"><span class="badge blocked">待处理</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.2</td><td><strong>全文读取重复计算整份 diff</strong></td><td>每次新旧侧读取会重算 diff，Commit/branch 单次约 4 个 Git 进程，频繁切换会放大。</td><td>建议改为轻量 name-status 授权或同 target 快照复用，working 失效语义需单独评估。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-1.2"><div class="fb-head"><span class="state"><span class="badge blocked">待处理</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.3</td><td><strong>文件与 diff 大小边界</strong></td><td>当前后端和前端均完整读取/渲染文件，超大文件或特殊文件可能消耗大量内存和 DOM。</td><td>建议先限制普通文件并设置明确预览上限，全文复制/下载与预览分开；具体阈值由人类决定。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-1.3"><div class="fb-head"><span class="state"><span class="badge blocked">待处理</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>1.4</td><td><strong>AbortController 与服务端取消传播</strong></td><td>前端已取消并防旧响应覆盖，但服务端 Git/文件工作仍会继续执行。</td><td>建议把 Request.Context 传到 exec.CommandContext，并评估是否限制并发。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-1.4"><div class="fb-head"><span class="state"><span class="badge blocked">待处理</span></span></div><div class="fb-body"></div></div></td></tr>
+</table>
+<h2>三、编号发现</h2>
+<table><tr><th>编号</th><th>级别</th><th>仓 / 位置</th><th>问题</th><th>证据</th><th>建议修法</th><th>处理</th></tr>
+<tr><td>2.1</td><td><span class="badge crit">Critical</span></td><td><code>web/src/App.vue</code></td><td>跨 Commit/历史 Review 评论可能串写</td><td>切换目标时评论身份未绑定，保存可写到新 Commit。</td><td>统一激活 watcher，按目标加载或清空，保存校验 revision、加载序号和 Review 身份。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.1"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.2</td><td><span class="badge crit">Critical</span></td><td><code>web/src/App.vue / internal/server/server.go</code></td><td>保存与导出状态不一致及保存竞态</td><td>旧保存响应可覆盖未保存状态，导出未使用当前草稿且跨来源混评论。</td><td>保存捕获快照与版本；导出传当前评论数组，working/branch 不回退到无关评论。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.2"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.3</td><td><span class="badge crit">Critical</span></td><td><code>web/src/App.vue / DiffSourceSelector.vue</code></td><td>迟到 Review 响应和重复点击可清空草稿</td><td>加载成功/失败、慢失败及重复 emit 都可覆盖用户输入。</td><td>同时校验请求序号与 commentRevision；完整 target 不变时不再 emit。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.3"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.4</td><td><span class="badge crit">Critical</span></td><td><code>internal/git/git.go</code></td><td>同名 branch/tag 导致错误 merge-base 与空 diff</td><td>短 ref 在歧义时解析到 tag HEAD。</td><td>校验、merge-base、diff 全部使用 refs/heads/&lt;base&gt;，补同名 tag 集成测试。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.4"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.5</td><td><span class="badge crit">Critical</span></td><td><code>internal/git/git.go / content.go</code></td><td>Git 选项注入和符号链接目标读取</td><td>原始 Commit 可解释为选项；未跟踪链接和根内链接可泄露目标内容。</td><td>Commit 统一 rev-parse 完整哈希；Lstat/Readlink 返回链接文本，普通文件校验打开身份。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.5"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.6</td><td><span class="badge crit">Critical</span></td><td><code>internal/server/server.go</code></td><td>ReviewID 路径穿越与 stale branch 快照</td><td>ID 未净化可逃逸存储目录；branch 导出可复用旧快照。</td><td>所有 ID 入口只接受规范 UUID；两个 branch 缓存来源都重新计算并加标记回归测试。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.6"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.7</td><td><span class="badge crit">Critical</span></td><td><code>web/src/components/FileContentModal.vue</code></td><td>重命名文件无法查看变更前内容</td><td>弹窗统一使用新路径请求旧侧。</td><td>old 使用 oldFile、new 使用 newFile，新增/删除保留展示路径回退。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.7"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.8</td><td><span class="badge blocked">Important</span></td><td><code>internal/git/git.go / git_test.go</code></td><td>main/master 并存默认值及 merge-base 测试空转</td><td>master 覆盖 main；旧夹具无法区分 merge-base 与 main 最新提交。</td><td>首个优先分支命中即停止；精确比较 merge-base，main 修改同文件验证旧侧。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.8"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.9</td><td><span class="badge blocked">Important</span></td><td><code>internal/git/content.go / server.go</code></td><td>仓库故障与未知 revision 的 HTTP 状态混淆</td><td>chdir/非仓库也可能返回 400。</td><td>仅有效仓库的未知 revision/ref 返回 400，其余 Git/读取故障返回 500，并拆分测试。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.9"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.10</td><td><span class="badge blocked">Important</span></td><td><code>internal/server/server.go</code></td><td>branch 保存和旧 working 兼容性</td><td>branch 可无 diff 静默保存；修复初期又误伤省略 type/comments 的旧请求。</td><td>保存仅 working/commit；空 type 规范 working，省略 comments 保留 Store 回退。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.10"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.11</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/DiffViewer.vue / ReviewWorkspace.vue</code></td><td>文件草稿复用与选择状态重复</td><td>切文件保留草稿可写错文件；父子组件重复选择状态。</td><td>DiffFile 按路径 key 重置；ReviewWorkspace 独占 selectedPath。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.11"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.12</td><td><span class="badge blocked">Important</span></td><td><code>web/src/App.vue</code></td><td>模板与历史详情异步乱序</td><td>模板加载覆盖编辑、失败清空、历史 A/B 乱序和关闭后重开。</td><td>模板加载序号、dirty 与同步 watcher；历史详情序号与关闭失效。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.12"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.13</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/ReviewResultModal.vue</code></td><td>历史详情完整文件入口无效</td><td>view-full 没有消费者且默认 target 错误。</td><td>复用 FileContentModal 并传历史 type/commit/base。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.13"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.14</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/DiffSourceSelector.vue / ReviewWorkspace.vue</code></td><td>参数列表加载失败与真空列表混淆</td><td>分支失败显示无分支，Commit 失败无重试。</td><td>分别增加 loading/empty/error/retry，空参数不触发 diff。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.14"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.15</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/DiffFile.vue / FileTreeNode.vue / FileExplorer.vue</code></td><td>长路径挤掉操作与 file→directory 重复 key</td><td>窄屏操作被裁；同路径文件和目录共用 key。</td><td>路径 min-w-0/truncate 与标题换行；key 改为 type:path。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.15"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.16</td><td><span class="badge blocked">Important</span></td><td><code>web/src/components/ReviewWorkspace.vue / DiffViewer.vue / App.vue</code></td><td>重复未保存通知和无可达加载状态</td><td>dirty 与 update:comments 重复；DiffViewer loading/error 由父组件固定覆盖。</td><td>仅保留 update:comments；删除不可达分支和 dirty 事件。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.16"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.17</td><td><span class="badge crit">Critical</span></td><td><code>前端与 Go 多处</code></td><td>无消费者接口、字段、参数和样式</td><td>getTarget、测试专用分类导出、预留 options、响应 Path/Side 和未使用 token。</td><td>删除无消费者项；comparison 元数据接入真实分支摘要；测试改经消费者验证。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.17"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>2.18</td><td><span class="badge blocked">Important</span></td><td><code>internal/server/server_test.go / web/tests</code></td><td>测试隔离和关键跨层回归缺口</td><td>测试 Review 文件写 cwd 互相污染；分支 API 自比较只断言 200。</td><td>每用例独立 review 文件；新增真实分叉、stale marker、选项、符号链接和导出内容测试。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-2.18"><div class="fb-head"><span class="state"><span class="badge done">已修复</span></span></div><div class="fb-body"></div></div></td></tr>
+</table>
+<h2>四、Suggestion 打包</h2>
+<div class="card"><h3>保持现状/后续记录</h3>
+<table><tr><th>编号</th><th>位置</th><th>问题与建议</th><th>处理</th></tr>
+<tr><td>3.1</td><td><code>web/src/components/ReviewWorkspace.vue</code></td><td>默认选中首个文本 diff 是截图后明确的可用性规则，与当前排序后的首个文件不同；文档需明确，不改代码。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-3.1"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.2</td><td><code>web/tests</code></td><td>SSR helper 有重复，非阻断；浏览器 E2E 已覆盖异步真实行为。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-3.2"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+<tr><td>3.3</td><td><code>internal/review/store.go / server.go</code></td><td>旧 []Comment 格式详情/导出解码不统一是基线存量，登记独立兼容任务，不在本特性扩大范围。</td><td style='min-width:170px'><div class="fb" data-item="wtf2pr-review-workspace-202611041358-3.3"><div class="fb-head"><span class="state"><span class="badge pending">接受现状</span></span></div><div class="fb-body"></div></div></td></tr>
+</table></div>
+<h2>五、已有决策复核（重报项，附证据，不再处理除非人类改判）</h2>
+<table><tr><th>事项</th><th>决策出处</th><th>本次重报与新证据</th></tr>
+<tr><td>原生 dialog 与自托管 IBM Plex</td><td>00-feature目标与实施偏差台账</td><td>使用 showModal/cancel/backdrop 统一关闭，字体含 OFL；生产视觉 0 FAIL。</td></tr>
+<tr><td>性能与监听安全</td><td>安全与性能子评审</td><td>Q1-Q4 均保留人类决策，未以性能或安全名义擅自改变默认产品边界。</td></tr>
+</table>
+<h2>六、做得好的</h2><ul>
+<li>真实临时 Git 仓库覆盖同名 tag、merge-base、重命名、符号链接、选项注入和 stale diff，测试不是空转断言。</li>
+<li>前端同时有 AbortController、序号和评论 revision 保护，修复后的异步边界由独立实例复查。</li>
+<li>真实浏览器完成三种来源、39 文件滚动、弹窗、评论、四种导出、历史和模板操作；生产视觉检查 0 FAIL。</li>
+</ul>
+<h2>七、验证记录（实跑）</h2>
+<table><tr><th>方</th><th>实跑内容</th><th>结果</th></tr>
+<tr><td>Go 正确性子评审与修复复查</td><td>go test -race ./...、go vet ./...</td><td>PASS</td></tr>
+<tr><td>前端子评审与修复复查</td><td>npm test、npm run lint、npm run build</td><td>20 tests PASS；lint/build PASS</td></tr>
+<tr><td>主 agent 浏览器 E2E</td><td>隔离 main/feature 仓库真实点击、API 冒烟、评论持久化和生产 embed</td><td>核心场景 PASS；剪贴板权限降级 PASS；物理 Esc 注入环境限制单列</td></tr>
+<tr><td>设计验收</td><td>inspect.mjs --app 生产页面 1440/768/390</td><td>0 FAIL；3 个长代码场景 WARN 已记录理由</td></tr>
+</table>
+<p class="meta">自动化浏览器剪贴板权限受限，仅验证失败降级；macOS 原生键盘截图通道为空，物理 Esc 不冒充 PASS。</p>
+<h2>八、后续步骤</h2><ul>
+<li>第二轮全面与简化评审，重点复查修复引入回归、契约兼容和残留死代码。</li>
+<li>全量 lint/build/test 后再进入第三轮冻结确认。</li>
+</ul>
+<script type="application/json" id="review-data">{"id": "R1-20261104-wtf2pr-review-workspace", "title": "WTF2PR 审查工作区重构 · 第一轮全面评审与修复", "date": "2026-11-04", "machine": "macOS 本地开发机", "method": "6 路 fresh-eyes 全面评审 + 主 agent 综合 + 修复后独立复查", "task": "wtf2pr-review-workspace", "ts": "202611041358", "report_path": "docs/tasks/2026-11-04-review-workspace/review-round-1.html", "projects": ["wtf2pr"], "scopes": [{"repo": "wtf2pr", "base": "008d392（工作区全部变更）", "branch": "feat/review-workspace-redesign", "stat": "前后端实现、测试、文档与自托管字体", "commits": "未提交工作区，无三点提交 diff"}], "out_of_scope": "未授权 commit/push/MR；性能上限和默认监听威胁模型未擅自改变；旧 []Comment 格式统一加载列为存量技术债。", "verdict": "第一轮发现的 Critical/Important 已全部修复并经新的 fresh-eyes 实例复查，无未解决 Critical/Important。默认监听鉴权、全文 diff 重算、大小上限和服务端取消传播留作人类决策。", "verdict_level": "warn", "items": [{"uid": "wtf2pr-review-workspace-202611041358-1.1", "num": "1.1", "sec": "待确认", "title": "默认监听与 CORS/鉴权", "status": "pending"}, {"uid": "wtf2pr-review-workspace-202611041358-1.2", "num": "1.2", "sec": "待确认", "title": "全文读取重复计算整份 diff", "status": "pending"}, {"uid": "wtf2pr-review-workspace-202611041358-1.3", "num": "1.3", "sec": "待确认", "title": "文件与 diff 大小边界", "status": "pending"}, {"uid": "wtf2pr-review-workspace-202611041358-1.4", "num": "1.4", "sec": "待确认", "title": "AbortController 与服务端取消传播", "status": "pending"}, {"uid": "wtf2pr-review-workspace-202611041358-2.1", "num": "2.1", "sec": "发现", "title": "跨 Commit/历史 Review 评论可能串写", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.2", "num": "2.2", "sec": "发现", "title": "保存与导出状态不一致及保存竞态", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.3", "num": "2.3", "sec": "发现", "title": "迟到 Review 响应和重复点击可清空草稿", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.4", "num": "2.4", "sec": "发现", "title": "同名 branch/tag 导致错误 merge-base 与空 diff", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.5", "num": "2.5", "sec": "发现", "title": "Git 选项注入和符号链接目标读取", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.6", "num": "2.6", "sec": "发现", "title": "ReviewID 路径穿越与 stale branch 快照", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.7", "num": "2.7", "sec": "发现", "title": "重命名文件无法查看变更前内容", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.8", "num": "2.8", "sec": "发现", "title": "main/master 并存默认值及 merge-base 测试空转", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.9", "num": "2.9", "sec": "发现", "title": "仓库故障与未知 revision 的 HTTP 状态混淆", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.10", "num": "2.10", "sec": "发现", "title": "branch 保存和旧 working 兼容性", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.11", "num": "2.11", "sec": "发现", "title": "文件草稿复用与选择状态重复", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.12", "num": "2.12", "sec": "发现", "title": "模板与历史详情异步乱序", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.13", "num": "2.13", "sec": "发现", "title": "历史详情完整文件入口无效", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.14", "num": "2.14", "sec": "发现", "title": "参数列表加载失败与真空列表混淆", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.15", "num": "2.15", "sec": "发现", "title": "长路径挤掉操作与 file→directory 重复 key", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.16", "num": "2.16", "sec": "发现", "title": "重复未保存通知和无可达加载状态", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.17", "num": "2.17", "sec": "发现", "title": "无消费者接口、字段、参数和样式", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-2.18", "num": "2.18", "sec": "发现", "title": "测试隔离和关键跨层回归缺口", "status": "fixed"}, {"uid": "wtf2pr-review-workspace-202611041358-3.1", "num": "3.1", "sec": "Suggestion", "title": "默认选中首个文本 diff 是截图后明确的可用性规则，与当前排序后的首个文件不同；文档需明确，不改代码。", "status": "accepted"}, {"uid": "wtf2pr-review-workspace-202611041358-3.2", "num": "3.2", "sec": "Suggestion", "title": "SSR helper 有重复，非阻断；浏览器 E2E 已覆盖异步真实行为。", "status": "accepted"}, {"uid": "wtf2pr-review-workspace-202611041358-3.3", "num": "3.3", "sec": "Suggestion", "title": "旧 []Comment 格式详情/导出解码不统一是基线存量，登记独立兼容任务，不在本特性扩大范围。", "status": "accepted"}], "decisions": [{"topic": "原生 dialog 与自托管 IBM Plex", "source": "00-feature目标与实施偏差台账", "note": "使用 showModal/cancel/backdrop 统一关闭，字体含 OFL；生产视觉 0 FAIL。"}, {"topic": "性能与监听安全", "source": "安全与性能子评审", "note": "Q1-Q4 均保留人类决策，未以性能或安全名义擅自改变默认产品边界。"}]}</script>
+<script>
+const STORE_KEY = "review-feedback-v1";
+const REVIEW_ID = "R1-20261104-wtf2pr-review-workspace";
+const REVIEW_TITLE = "WTF2PR 审查工作区重构 · 第一轮全面评审与修复";
+
+function loadStore() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+function saveStore(s) { localStorage.setItem(STORE_KEY, JSON.stringify(s)); }
+function reviewData() {
+  const s = loadStore();
+  if (!s[REVIEW_ID]) s[REVIEW_ID] = { items: {} };
+  return s;
+}
+function itemState(id) {
+  const d = reviewData()[REVIEW_ID].items[id];
+  return d || null;
+}
+function setItem(id, patch) {
+  const s = reviewData();
+  const cur = s[REVIEW_ID].items[id] || {};
+  s[REVIEW_ID].items[id] = Object.assign({}, cur, patch, { updatedAt: new Date().toISOString() });
+  saveStore(s);
+  render();
+}
+function removeItem(id) {
+  const s = reviewData();
+  delete s[REVIEW_ID].items[id];
+  saveStore(s);
+  render();
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// 弹窗基础设施：mask 点击空白处不关闭（防误触丢内容），仅按钮/Esc 关闭
+function openModal(id) {
+  document.getElementById(id).classList.add("open");
+  document.addEventListener("keydown", escClose);
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove("open");
+  document.removeEventListener("keydown", escClose);
+}
+function escClose(e) {
+  if (e.key === "Escape") document.querySelectorAll(".modal-mask.open").forEach(m => m.classList.remove("open"));
+}
+function render() {
+  const items = reviewData()[REVIEW_ID].items;
+  let done = 0, noted = 0;
+  document.querySelectorAll("[data-item]").forEach(box => {
+    const id = box.getAttribute("data-item");
+    const st = items[id];
+    const row = box.closest("tr");
+    const stateEl = box.querySelector(".state");
+    const bodyEl = box.querySelector(".fb-body");
+    if (st && (st.note || st.done)) {
+      noted += st.note ? 1 : 0;
+      done += st.done ? 1 : 0;
+      stateEl.innerHTML = st.done
+        ? '<span class="badge done">已处理</span>'
+        : '<span class="badge blocked">已建议</span>';
+      if (row) row.classList.toggle("done-row", !!st.done);
+      bodyEl.innerHTML =
+        (st.note ? `<div class="note-view">${esc(st.note)}<span class="t">${esc(fmtTime(st.updatedAt))}</span></div>` : "") +
+        `<div class="fb-head" style="margin-top:6px">
+          <button class="tb" onclick="editNote('${id}')">${st.note ? "修改建议" : "写建议"}</button>
+          <button class="tb" onclick="setItem('${id}', {done: ${st.done ? "false" : "true"}})">${st.done ? "重开" : "标记已处理"}</button>
+          <button class="tb danger" onclick="removeItem('${id}')">删除</button>
+        </div>`;
+    } else {
+      stateEl.innerHTML = "";
+      if (row) row.classList.remove("done-row");
+      bodyEl.innerHTML = `<div class="fb-head"><button class="tb" onclick="editNote('${id}')">写建议</button></div>`;
+    }
+  });
+  const stats = document.getElementById("fb-stats");
+  if (stats) stats.textContent = `本 review 已建议 ${noted} 条 · 已处理 ${done} 条`;
+  // 管理弹窗若开着，同步刷新
+  const mgr = document.getElementById("mgr-modal");
+  if (mgr && mgr.classList.contains("open")) renderManage();
+}
+function editNote(id) {
+  const box = document.querySelector(`[data-item="${id}"] .fb-body`);
+  const st = itemState(id) || {};
+  box.innerHTML =
+    `<textarea id="ta-${id}" placeholder="输入处理建议…">${esc(st.note || "")}</textarea>
+     <div class="fb-head" style="margin-top:6px">
+       <button class="tb" onclick="saveNote('${id}')">保存</button>
+       <button class="tb" onclick="saveNote('${id}', true)">保存并标记已处理</button>
+       <button class="tb" onclick="render()">取消</button>
+     </div>`;
+  document.getElementById(`ta-${id}`).focus();
+}
+function saveNote(id, andDone) {
+  const v = document.getElementById(`ta-${id}`).value.trim();
+  setItem(id, { note: v, done: andDone ? true : (itemState(id) || {}).done || false });
+}
+function mdEscape(s) { return String(s == null ? "" : s); }
+function mdCell(s) { return mdEscape(s).replace(/\|/g, "\\|").replace(/\s*\n+\s*/g, " "); }
+const STATUS_TEXT = { fixed: "按建议已修复", decided: "已定方案", accepted: "保持现状" };
+function buildMarkdown() {
+  const meta = JSON.parse(document.getElementById("review-data").textContent);
+  const items = reviewData()[REVIEW_ID].items;
+  const L = [];
+  L.push(`# ${meta.title}`);
+  L.push("");
+  L.push("## Meta");
+  L.push(`- 任务名称：${meta.task}`);
+  L.push(`- 涉及项目：${(meta.projects || []).join(", ")}`);
+  L.push(`- Review 日期：${meta.date}`);
+  L.push(`- Review 文件：${meta.report_path}`);
+  L.push(`- 时间戳：${meta.ts}`);
+  L.push(`- 总体判定：${meta.verdict}`);
+  L.push(`- 导出时间：${fmtTime(new Date().toISOString())}（含 localStorage 中的处理建议）`);
+  L.push("");
+  L.push("| 问题编号 | 状态 + 处理方案 |");
+  L.push("| --- | --- |");
+  (meta.items || []).forEach(it => {
+    const st = items[it.uid];
+    const statusText = STATUS_TEXT[it.status] || "";
+    let cell;
+    if (st && st.done) {
+      cell = "[已处理]" + (st.note ? " " + st.note : (statusText ? " " + statusText : ""));
+    } else if (st && st.note) {
+      cell = "[未处理] " + st.note;
+    } else if (statusText) {
+      cell = "[已处理] " + statusText;
+    } else {
+      cell = "[未处理]";
+    }
+    L.push(`| ${it.uid} | ${mdCell(cell)} |`);
+  });
+  return L.join("\n");
+}
+function exportMarkdown() {
+  document.getElementById("md-view").value = buildMarkdown();
+  document.getElementById("copy-hint").textContent = "";
+  openModal("md-modal");
+}
+function copyMarkdown() {
+  const ta = document.getElementById("md-view");
+  const hint = document.getElementById("copy-hint");
+  const ok = () => { hint.textContent = "已复制"; };
+  const fallback = () => {
+    ta.focus(); ta.select();
+    try { hint.textContent = document.execCommand("copy") ? "已复制" : "复制失败，请手动全选复制"; }
+    catch (e) { hint.textContent = "复制失败，请手动全选复制"; }
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(ta.value).then(ok, fallback);
+  } else {
+    fallback(); // 非 HTTPS 环境 navigator.clipboard 不可用
+  }
+}
+// 数据管理：跨 review 查看/逐条删/按 review 删/全部删
+function manageData() {
+  renderManage();
+  openModal("mgr-modal");
+}
+function renderManage() {
+  const s = loadStore();
+  const host = document.getElementById("mgr-body");
+  const ids = Object.keys(s).filter(k => s[k] && s[k].items && Object.keys(s[k].items).length > 0);
+  if (ids.length === 0) {
+    host.innerHTML = '<div class="mgr-empty">暂无存储的建议数据</div>';
+    return;
+  }
+  host.innerHTML = ids.map(rid => {
+    const entries = Object.entries(s[rid].items);
+    const cur = rid === REVIEW_ID ? ' <span class="badge done">当前页面</span>' : "";
+    const rows = entries.map(([iid, st]) => {
+      const state = st.done ? '<span class="badge done">已处理</span>' : '<span class="badge blocked">已建议</span>';
+      const note = st.note ? esc(st.note) : '<span style="color:var(--muted)">（无文字建议）</span>';
+      return `<div class="mgr-item">
+        <span class="iid">${esc(iid)}</span> ${state}
+        <span class="nt">${note}</span>
+        <span class="t">${esc(fmtTime(st.updatedAt))}</span>
+        <button class="tb danger" onclick="mgrDeleteItem('${esc(rid)}','${esc(iid)}')">删除</button>
+      </div>`;
+    }).join("");
+    return `<div class="mgr-review" data-rid="${esc(rid)}">
+      <div class="mgr-review-head" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="rid">${esc(rid)}</span>${cur}
+        <span class="cnt">${entries.length} 条（点击展开）</span>
+        <button class="tb danger" onclick="event.stopPropagation(); mgrDeleteReview('${esc(rid)}')">删除该 review 全部</button>
+      </div>
+      <div class="mgr-items">${rows}</div>
+    </div>`;
+  }).join("");
+}
+function mgrDeleteItem(rid, iid) {
+  const s = loadStore();
+  if (s[rid] && s[rid].items) delete s[rid].items[iid];
+  saveStore(s);
+  renderManage(); render();
+}
+function mgrDeleteReview(rid) {
+  if (!confirm(`确定删除 review「${rid}」的全部建议数据？`)) return;
+  const s = loadStore();
+  delete s[rid];
+  saveStore(s);
+  renderManage(); render();
+}
+function mgrDeleteAll() {
+  if (!confirm("确定删除全部 review 的全部建议数据？（不可恢复）")) return;
+  localStorage.removeItem(STORE_KEY);
+  renderManage(); render();
+}
+document.addEventListener("DOMContentLoaded", render);
+</script>
+</body></html>

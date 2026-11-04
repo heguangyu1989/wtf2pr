@@ -64,6 +64,7 @@
                 v-if="selectedFile"
                 :file="selectedFile"
                 :comments="data.comments"
+                @view-full="fullFile = selectedFile"
               />
             </section>
           </div>
@@ -92,12 +93,19 @@
         </template>
       </div>
     </div>
+    <FileContentModal
+      v-if="fullFile"
+      :target="fullTarget"
+      :file="fullFile"
+      @close="fullFile = null"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
 import ReadonlyDiffFile from './ReadonlyDiffFile.vue'
+import FileContentModal from './FileContentModal.vue'
 
 const props = defineProps({
   data: { type: Object, required: true },
@@ -105,11 +113,15 @@ const props = defineProps({
 const emit = defineEmits(['close', 'export'])
 
 const exportFormat = ref('markdown')
-
+const fullFile = ref(null)
 const hasDiff = computed(() => props.data.type === 'commit' && props.data.diff && props.data.diff.files && props.data.diff.files.length > 0)
 const commitInfo = computed(() => props.data.diff?.commitInfo || null)
 const selectedIndex = ref(0)
 const selectedFile = computed(() => props.data.diff?.files[selectedIndex.value] || null)
+const fullTarget = computed(() => ({
+  type: props.data.type,
+  commit: props.data.commit || '',
+}))
 
 function doExport() {
   emit('export', exportFormat.value)

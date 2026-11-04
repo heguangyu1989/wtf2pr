@@ -1,5 +1,184 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-400.ttf") format("truetype");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-500.ttf") format("truetype");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-600.ttf") format("truetype");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400.ttf") format("truetype");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-500.ttf") format("truetype");
+}
+
+:root {
+  color-scheme: light dark;
+  --ground: #f4f7f8;
+  --surface: #ffffff;
+  --raised: #f4f6f8;
+  --active: #e7eeee;
+  --border: #e8eaec;
+  --control: #cdced1;
+  --text: #131416;
+  --muted: #5d5f60;
+  --accent: #1b6c80;
+  --primary: #1d1f20;
+  --positive: #1e7b4f;
+  --negative: #c4242a;
+  --addition-bg: #edf8f0;
+  --deletion-bg: #fff0f0;
+  --selection-bg: #e8f2f4;
+  --radius-sheet: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #101212;
+    --surface: #161919;
+    --raised: #202424;
+    --active: #27302f;
+    --border: #2e3333;
+    --control: #4c5454;
+    --text: #f4f5f5;
+    --muted: #b4b8b8;
+    --accent: #69b6c7;
+    --primary: #f4f5f5;
+    --positive: #3fc07a;
+    --negative: #e5566f;
+    --addition-bg: #172a1d;
+    --deletion-bg: #2c1a20;
+    --selection-bg: #1c3439;
+  }
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+*,
+*::before,
+*::after {
+  border-color: var(--border);
+}
+
 body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--ground);
+  color: var(--text);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tabular-nums,
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+:where(a:any-link, button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--selection-bg);
+}
+
+.text-red-700 {
+  color: var(--negative);
+}
+.text-green-700 {
+  color: var(--positive);
+}
+.text-gray-500 {
+  color: var(--muted);
+}
+
+.app-sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sheet);
+}
+
+.control-primary {
+  color: var(--surface);
+  background: var(--primary);
+}
+.control-primary:disabled {
+  color: var(--muted);
+  background: var(--active);
+  cursor: not-allowed;
+}
+
+.diff-addition {
+  background: var(--addition-bg);
+}
+.diff-deletion {
+  background: var(--deletion-bg);
+}
+.diff-hunk {
+  background: var(--raised);
+  color: var(--muted);
+}
+.diff-file {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+@media (pointer: coarse) {
+  button,
+  select,
+  input {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

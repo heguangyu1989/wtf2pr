@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -58,7 +59,7 @@ func setupTestServer(t *testing.T) (*Server, string) {
 		t.Fatalf("failed to write index.html: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	srv := NewServer(dir, os.DirFS(staticDir), "")
+	srv := NewServer(dir, os.DirFS(staticDir), filepath.Join(t.TempDir(), "review.json"))
 	return srv, dir
 }
 
@@ -392,9 +393,9 @@ func TestHandleGetReviewDetail(t *testing.T) {
 		t.Fatalf("expected 1 comment in detail")
 	}
 
-	// non-existent id
+	// well-formed but non-existent id
 	w3 := httptest.NewRecorder()
-	req3, _ := http.NewRequest("GET", "/api/review/detail?id=bad-id", nil)
+	req3, _ := http.NewRequest("GET", "/api/review/detail?id=00000000-0000-0000-0000-000000000000", nil)
 	srv.engine.ServeHTTP(w3, req3)
 	if w3.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w3.Code)
@@ -492,5 +493,498 @@ func TestHandleSaveTemplate(t *testing.T) {
 	}
 	if string(b) != "{{.Type}}" {
 		t.Errorf("expected saved template content")
+	}
+}
+
+func TestHandleBranchesAndBranchDiff(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := string(bytes.TrimSpace(out))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/branches", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected branches 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var branchResp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &branchResp); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := branchResp.Data.(map[string]interface{})
+	if !ok || data["current"] != base {
+		t.Fatalf("unexpected branches response: %#v", branchResp.Data)
+	}
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/diff?type=branch&base="+base, nil)
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected branch diff 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/diff?type=branch", nil)
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing base 400, got %d", w3.Code)
+	}
+}
+
+func TestHandleGetFileContent(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/file/content?type=working&path=a.txt&side=new", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected file content 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok || data["content"] != "hello world\n" || data["exists"] != true {
+		t.Fatalf("unexpected file content: %#v", resp.Data)
+	}
+
+	for _, target := range []string{
+		"/api/file/content?type=working&path=..%2Foutside.txt&side=new",
+		"/api/file/content?type=working&path=.git%2Fconfig&side=new",
+		"/api/file/content?type=working&path=a.txt&side=invalid",
+	} {
+		w2 := httptest.NewRecorder()
+		req2, _ := http.NewRequest("GET", target, nil)
+		srv.engine.ServeHTTP(w2, req2)
+		if w2.Code == http.StatusOK || bytes.Contains(w2.Body.Bytes(), []byte("hello world")) {
+			t.Fatalf("expected safe rejection for %q, got %d: %s", target, w2.Code, w2.Body.String())
+		}
+	}
+}
+
+func TestHandleExportBranch(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := string(bytes.TrimSpace(out))
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeBranch, Base: base}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected branch export 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok || data["format"] != "markdown" {
+		t.Fatalf("unexpected branch export response: %#v", resp.Data)
+	}
+}
+
+func TestHandleGetReviewsEmptyReturnsArray(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/reviews", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	items, ok := resp.Data.([]interface{})
+	if !ok {
+		t.Fatalf("expected an empty array, got %#v", resp.Data)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no reviews, got %#v", items)
+	}
+}
+
+func TestHandleGetFileContentErrorStatus(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	srv.workDir = filepath.Join(t.TempDir(), "missing")
+	for _, target := range []string{
+		"/api/file/content?type=working&path=a.txt&side=new",
+		"/api/file/content?type=commit&commit=HEAD&path=a.txt&side=new",
+		"/api/file/content?type=branch&base=main&path=a.txt&side=new",
+	} {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", target, nil)
+		srv.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("expected repository failure 500, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	srv.workDir = dir
+	for _, target := range []string{
+		"/api/file/content?type=commit&commit=missing&path=a.txt&side=new",
+		"/api/file/content?type=branch&base=missing&path=a.txt&side=new",
+		"/api/file/content?type=branch&path=a.txt&side=new",
+	} {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", target, nil)
+		srv.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected invalid source 400, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleSaveReviewRejectsBranch(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	payload := models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", Content: "branch"}}, Type: models.DiffTypeBranch, Commit: ""}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected branch save 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestReviewIDRejectsPathTraversal(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/review/detail?id=..%2F..%2Foutside", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected detail traversal 400, got %d", w.Code)
+	}
+
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking, ReviewID: "../../outside"}
+	body, _ := json.Marshal(payload)
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected export traversal 400, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestHandleExportUsesRequestComments(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	srv.store.Save(&models.PersistedReview{Type: string(models.DiffTypeCommit), Comments: []models.Comment{{ID: "old", FilePath: "a.txt", Content: "stored commit comment"}}})
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking, Comments: []models.Comment{}}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected working export 200, got %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("stored commit comment")) {
+		t.Fatalf("working export leaked commit comments: %s", w.Body.String())
+	}
+
+	commitCmd := exec.Command("git", "rev-parse", "HEAD")
+	commitCmd.Dir = dir
+	commitOut, err := commitCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := models.ExportRequest{
+		Format:   models.ExportFormatMarkdown,
+		Type:     models.DiffTypeCommit,
+		Commit:   string(bytes.TrimSpace(commitOut)),
+		Comments: []models.Comment{{ID: "draft", FilePath: "a.txt", Content: "unsaved draft comment"}},
+	}
+	body2, _ := json.Marshal(draft)
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK || !bytes.Contains(w2.Body.Bytes(), []byte("unsaved draft comment")) {
+		t.Fatalf("expected unsaved comments in export, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestHandleSaveReviewDefaultsToWorking(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	payload := models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", FilePath: "a.txt", Content: "legacy working"}}}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected legacy working save 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := srv.store.GetPersisted().Type; got != string(models.DiffTypeWorking) {
+		t.Fatalf("expected working type, got %q", got)
+	}
+}
+
+func TestHandleExportWorkingWithoutCommentsUsesStore(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("working change\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv.store.Save(&models.PersistedReview{Type: string(models.DiffTypeWorking), Comments: []models.Comment{{ID: "1", FilePath: "a.txt", Content: "stored working comment"}}})
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("stored working comment")) {
+		t.Fatalf("expected stored working comment, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleExportBranchIgnoresStaleSnapshots(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %s", args, out)
+		}
+	}
+	run("branch", "-m", "main")
+	run("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("CURRENT_MARKER\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-m", "current branch content")
+	staleDiff := &models.DiffResponse{Type: models.DiffTypeBranch, Files: []models.FileDiff{{
+		OldFile: "a.txt", NewFile: "a.txt",
+		Hunks: []models.Hunk{{OldStart: 0, OldLines: 0, NewStart: 1, NewLines: 1, Lines: []models.DiffLine{{Type: models.LineTypeAddition, NewLineNo: 1, Content: "STALE_MARKER"}}}},
+	}}}
+	comments := []models.Comment{{ID: "1", FilePath: "a.txt", LineKey: "new:1", Content: "comment"}}
+	srv.store.Save(&models.PersistedReview{Type: string(models.DiffTypeBranch), Diff: staleDiff, Comments: comments})
+	reviewID := "36a0ffea-1b68-4434-91c1-2006ad5593e9"
+	persisted := models.PersistedReview{ReviewID: reviewID, Type: string(models.DiffTypeBranch), Diff: staleDiff, Comments: comments}
+	data, _ := json.Marshal(persisted)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(srv.reviewFile), "review_"+reviewID+".json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, reviewID := range []string{"", reviewID} {
+		payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeBranch, Base: "main", ReviewID: reviewID, Comments: comments}
+		body, _ := json.Marshal(payload)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		srv.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("CURRENT_MARKER")) || bytes.Contains(w.Body.Bytes(), []byte("STALE_MARKER")) {
+			t.Errorf("expected fresh branch diff for review %q, got %d: %s", reviewID, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleSaveReviewCanonicalizesCommit(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	payload := models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", FilePath: "a.txt", LineKey: "new:1", Content: "canonical"}}, Type: models.DiffTypeCommit, Commit: "HEAD"}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected save 200, got %d: %s", w.Code, w.Body.String())
+	}
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := string(bytes.TrimSpace(out))
+	persisted := srv.store.GetPersisted()
+	if persisted.Commit != want || persisted.Diff.Commit != want {
+		t.Fatalf("expected canonical commit %q, got %q / %#v", want, persisted.Commit, persisted.Diff)
+	}
+}
+
+func TestHandleExportDoesNotFallbackAcrossCommits(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	srv.store.Save(&models.PersistedReview{Type: string(models.DiffTypeCommit), Commit: "another-commit", Comments: []models.Comment{{ID: "1", FilePath: "a.txt", Content: "OTHER_COMMIT_PRIVATE_COMMENT"}}})
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeCommit, Commit: string(bytes.TrimSpace(out))}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected export 200, got %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("OTHER_COMMIT_PRIVATE_COMMENT")) {
+		t.Fatalf("export leaked another commit's comments: %s", w.Body.String())
+	}
+}
+
+func TestHandleExportRejectsMissingBase(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeBranch}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing base 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleExportWorkingRecomputesDiff(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("FIRST\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	save := models.SaveReviewRequest{Comments: []models.Comment{{ID: "1", FilePath: "a.txt", LineKey: "new:1", Content: "working"}}, Type: models.DiffTypeWorking}
+	body, _ := json.Marshal(save)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/review", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected working save 200, got %d", w.Code)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("SECOND\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	exportReq := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeWorking}
+	exportBody, _ := json.Marshal(exportReq)
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(exportBody))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK || !bytes.Contains(w2.Body.Bytes(), []byte("SECOND")) || bytes.Contains(w2.Body.Bytes(), []byte("FIRST")) {
+		t.Fatalf("expected fresh working diff, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestReviewFileAccessConcurrent(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/api/config", nil)
+			srv.engine.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected config 200, got %d", w.Code)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/review/new", nil)
+			srv.engine.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected new review 200, got %d", w.Code)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestHandleExportHistoricalSnapshotWithoutCurrentCommit(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	reviewID := "36a0ffea-1b68-4434-91c1-2006ad5593e9"
+	persisted := models.PersistedReview{
+		ReviewID: reviewID,
+		Type:     string(models.DiffTypeCommit),
+		Commit:   "missing-commit",
+		Diff: &models.DiffResponse{Type: models.DiffTypeCommit, Files: []models.FileDiff{{
+			OldFile: "a.txt", NewFile: "a.txt",
+			Hunks: []models.Hunk{{OldStart: 0, OldLines: 0, NewStart: 1, NewLines: 1, Lines: []models.DiffLine{{Type: models.LineTypeAddition, NewLineNo: 1, Content: "HISTORICAL_SNAPSHOT"}}}},
+		}}},
+		Comments: []models.Comment{{ID: "1", FilePath: "a.txt", LineKey: "new:1", Content: "history"}},
+	}
+	data, _ := json.Marshal(persisted)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(srv.reviewFile), "review_"+reviewID+".json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	payload := models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeCommit, Commit: "missing-commit", ReviewID: reviewID}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("HISTORICAL_SNAPSHOT")) {
+		t.Fatalf("expected historical snapshot export, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCustomReviewIDCompatibility(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := string(bytes.TrimSpace(out))
+	persisted := models.PersistedReview{
+		ReviewID: "feature_x",
+		Type:     string(models.DiffTypeCommit),
+		Commit:   commit,
+		Diff: &models.DiffResponse{Type: models.DiffTypeCommit, Commit: commit, Files: []models.FileDiff{{
+			OldFile: "a.txt", NewFile: "a.txt",
+			Hunks: []models.Hunk{{OldStart: 0, OldLines: 0, NewStart: 1, NewLines: 1, Lines: []models.DiffLine{{Type: models.LineTypeAddition, NewLineNo: 1, Content: "hello"}}}},
+		}}},
+		Comments: []models.Comment{{ID: "1", FilePath: "a.txt", LineKey: "new:1", Content: "feature comment"}},
+	}
+	data, _ := json.Marshal(persisted)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(srv.reviewFile), "review_feature_x.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/review/detail?id=feature_x", nil)
+	srv.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected custom id detail 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	switchBody, _ := json.Marshal(models.SwitchReviewRequest{ReviewID: "feature_x"})
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/review/switch", bytes.NewReader(switchBody))
+	req2.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected custom id switch 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	exportBody, _ := json.Marshal(models.ExportRequest{Format: models.ExportFormatMarkdown, Type: models.DiffTypeCommit, Commit: commit, ReviewID: "feature_x"})
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("POST", "/api/export", bytes.NewReader(exportBody))
+	req3.Header.Set("Content-Type", "application/json")
+	srv.engine.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK || !bytes.Contains(w3.Body.Bytes(), []byte("feature comment")) {
+		t.Fatalf("expected custom id export 200 with comments, got %d: %s", w3.Code, w3.Body.String())
 	}
 }

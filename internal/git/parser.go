@@ -27,10 +27,10 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 			}
 			current = &models.FileDiff{}
 			currentHunk = nil
-			parts := strings.SplitN(line, " ", 4)
-			if len(parts) >= 4 {
-				current.OldFile = strings.TrimPrefix(parts[2], "a/")
-				current.NewFile = strings.TrimPrefix(parts[3], "b/")
+			header := strings.TrimPrefix(line, "diff --git ")
+			if index := strings.LastIndex(header, " b/"); index >= 0 {
+				current.OldFile = parsePatchPath(header[:index], "a/")
+				current.NewFile = parsePatchPath(header[index+3:], "b/")
 			}
 			continue
 		}
@@ -49,9 +49,19 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 		}
 		if strings.HasPrefix(line, "Binary files ") {
 			current.IsBinary = true
+			body := strings.TrimSuffix(strings.TrimPrefix(line, "Binary files "), " differ")
+			if index := strings.LastIndex(body, " and b/"); index >= 0 {
+				current.OldFile = parsePatchPath(body[:index], "a/")
+				current.NewFile = parsePatchPath(body[index+7:], "b/")
+			}
 			continue
 		}
-		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+		if strings.HasPrefix(line, "--- ") {
+			current.OldFile = parsePatchPath(strings.TrimPrefix(line, "--- "), "a/")
+			continue
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			current.NewFile = parsePatchPath(strings.TrimPrefix(line, "+++ "), "b/")
 			continue
 		}
 		if strings.HasPrefix(line, "@@ ") {
@@ -85,6 +95,28 @@ func ParseDiff(raw string) ([]models.FileDiff, error) {
 		files = append(files, *current)
 	}
 	return files, nil
+}
+
+func parsePatchPath(raw, prefix string) string {
+	if raw == "/dev/null" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "\"") {
+		if unquoted, err := strconv.Unquote(raw); err == nil {
+			var decoded strings.Builder
+			for _, char := range unquoted {
+				if char <= 255 {
+					decoded.WriteByte(byte(char))
+				} else {
+					decoded.WriteRune(char)
+				}
+			}
+			raw = decoded.String()
+		}
+	} else if index := strings.Index(raw, "\t"); index >= 0 {
+		raw = raw[:index]
+	}
+	return strings.TrimPrefix(raw, prefix)
 }
 
 func parseHunkHeader(line string) (*models.Hunk, error) {

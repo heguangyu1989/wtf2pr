@@ -14,11 +14,22 @@ async function request(url, options = {}) {
   return data.data
 }
 
-export function getDiff(type = 'working', commit = '') {
-  const qs = new URLSearchParams()
-  qs.set('type', type)
+export function getDiff(type = 'working', commit = '', base = '', options = {}) {
+  const qs = new URLSearchParams({ type })
   if (commit) qs.set('commit', commit)
-  return request(`/diff?${qs.toString()}`)
+  if (base) qs.set('base', base)
+  return request(`/diff?${qs.toString()}`, options)
+}
+
+export function getBranches() {
+  return request('/branches')
+}
+
+export function getFileContent({ type, commit = '', base = '', path, side }, options = {}) {
+  const qs = new URLSearchParams({ type, path, side })
+  if (commit) qs.set('commit', commit)
+  if (base) qs.set('base', base)
+  return request(`/file/content?${qs.toString()}`, options)
 }
 
 export function getCommits(page = 1, pageSize = 10) {
@@ -62,10 +73,10 @@ export function getReviewDetail(id) {
   return request(`/review/detail?id=${encodeURIComponent(id)}`)
 }
 
-export function exportReview(format, type, commit, reviewID = '') {
+export function exportReview(format, type, commit, reviewID = '', base = '', comments = null) {
   return request('/export', {
     method: 'POST',
-    body: JSON.stringify({ format, type, commit, reviewID }),
+    body: JSON.stringify({ format, type, commit, reviewID, base, comments }),
   })
 }
 

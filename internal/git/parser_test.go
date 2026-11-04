@@ -281,3 +281,21 @@ func TestParseDiffWithLongContent(t *testing.T) {
 		t.Errorf("addition content mismatch")
 	}
 }
+
+func TestParseDiffPathsWithSpacesAndQuotedUnicode(t *testing.T) {
+	raw := "diff --git a/src/a file.js b/src/a file.js\nindex abc..def 100644\n--- a/src/a file.js\n+++ b/src/a file.js\n@@ -1 +1 @@\n-before\n+after\n" +
+		"diff --git \"a/src/\\346\\226\\207\\346\\241\\243.js\" \"b/src/\\346\\226\\207\\346\\241\\243.js\"\nindex abc..def 100644\n--- \"a/src/\\346\\226\\207\\346\\241\\243.js\"\n+++ \"b/src/\\346\\226\\207\\346\\241\\243.js\"\n@@ -1 +1 @@\n-old\n+new\n"
+	files, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+	if files[0].OldFile != "src/a file.js" || files[0].NewFile != "src/a file.js" {
+		t.Errorf("space path mismatch: %#v", files[0])
+	}
+	if files[1].OldFile != "src/文档.js" || files[1].NewFile != "src/文档.js" {
+		t.Errorf("quoted unicode path mismatch: %#v", files[1])
+	}
+}

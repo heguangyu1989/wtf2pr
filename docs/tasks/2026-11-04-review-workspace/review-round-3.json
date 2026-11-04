@@ -1,0 +1,63 @@
+{
+  "review": {
+    "id": "R3-20261104-wtf2pr-review-workspace",
+    "title": "WTF2PR 审查工作区重构 · 第三轮代码冻结评审",
+    "date": "2026-11-04",
+    "machine": "macOS 本地开发机",
+    "method": "4 路 fresh-eyes 冻结评审 + 终审问题专项复核 + 最终浏览器回归",
+    "task": "wtf2pr-review-workspace",
+    "ts": "202611041607",
+    "report_path": "docs/tasks/2026-11-04-review-workspace/review-round-3.html",
+    "projects": ["wtf2pr"],
+    "scopes": [{"repo": "wtf2pr", "base": "008d392（工作区全部变更）", "branch": "feat/review-workspace-redesign", "stat": "最终生产代码、测试与文档", "commits": "未提交工作区"}],
+    "out_of_scope": "Q1-Q4 性能和默认监听策略仍留人类决策；旧 []Comment 解码统一为独立技术债，不影响本次验收。",
+    "verdict": "第三轮指出的 Critical/Important 已全部修复并经专项 fresh-eyes 复核。最终 Go race/vet/build、前端 20 测试/lint/build、生产浏览器关键路径均通过，进入未提交交付。",
+    "verdict_level": "ok"
+  },
+  "summary_rows": [
+    {"cells": ["wtf2pr（4 路冻结 + 专项复核）", "12 组已修复", "4 项待决策", "文档已回写", "✓ 冻结通过，最终浏览器回归通过"]}
+  ],
+  "confirmations": [
+    {"id": "Q1", "title": "默认监听与 CORS/鉴权", "background": "默认监听与宽松 CORS 未在本次扩大变更中擅自改变。", "options": "建议默认 127.0.0.1，远程模式显式开启并加 token。", "status": "pending"},
+    {"id": "Q2", "title": "全文读取重复计算 diff", "background": "NUL raw 路径授权仍需计算 diff，频繁切换有额外 Git 进程。", "options": "建议后续轻量授权或同 target 快照复用。", "status": "pending"},
+    {"id": "Q3", "title": "文件与 diff 大小上限", "background": "完整文件和 diff 上限属于产品阈值决策。", "options": "建议明确预览上限并区分下载与预览。", "status": "pending"},
+    {"id": "Q4", "title": "服务端取消传播", "background": "前端 AbortController 已防旧响应覆盖，服务端工作仍继续。", "options": "建议 Request.Context 贯穿 Git 子进程并评估并发上限。", "status": "pending"}
+  ],
+  "findings": [
+    {"id": "1", "level": "important", "location": "internal/git/content.go", "title": "同路径删除+未跟踪新增时新侧误报不存在", "evidence": "首个删除项提前返回，未检查后续未跟踪新增。", "fix": "按请求侧选择实际存在条目，缺失侧与错侧分离，增加真实 Git 组合测试。", "status": "fixed"},
+    {"id": "2", "level": "important", "location": "internal/git/raw.go", "title": "raw 新增/删除空侧被赋成同一路径", "evidence": "A/D 单路径同时写 old/new，破坏空侧契约。", "fix": "A 仅 newPath、D 仅 oldPath，直接单元测试和全量 API 回归。", "status": "fixed"},
+    {"id": "3", "level": "important", "location": "internal/git/git.go / raw.go", "title": "普通 merge commit 的 raw 元数据长度不匹配", "evidence": "合并 patch 与单父 raw diff 语义不同。", "fix": "merge commit 保留 Git 原生合并语义，只有非 merge 才应用 raw 路径校验。", "status": "fixed"},
+    {"id": "4", "level": "important", "location": "internal/git/content.go", "title": "重命名环会命中错误侧", "evidence": "仅按版本存在提前 break，可能命中 A→B 的新侧而非 B→A 的旧侧。", "fix": "只有请求侧精确路径相等才停止；不存在侧单独记录并拒绝错侧重命名。", "status": "fixed"},
+    {"id": "5", "level": "critical", "location": "web/src/App.vue / ReviewWorkspace.vue", "title": "评论未水合时可能保存空快照或部分快照", "evidence": "慢 getReview 期间可编辑/保存，临时空数组可持久化。", "fix": "引入水合状态，完成前只读并禁止保存/导出，失败可重试，事件入口再次兜底。", "status": "fixed"},
+    {"id": "6", "level": "critical", "location": "web/src/App.vue", "title": "初始化和导出乱序可覆盖用户状态", "evidence": "慢成功/失败可恢复旧 target，A 慢 B 快可覆盖导出并 reopen。", "fix": "初始化守卫 serial/revision/target/label；导出统一 exportSerial，关闭递增使其失效。", "status": "fixed"},
+    {"id": "7", "level": "important", "location": "web/src/App.vue", "title": "初始化守卫自身恢复导致标签为空", "evidence": "恢复 Commit 会递增 serial，旧配置被自己拦截。", "fix": "仅放行初始化自身 initialReviewApplied，继续阻止用户后续新建/切换覆盖。", "status": "fixed"},
+    {"id": "8", "level": "important", "location": "web/src/App.vue", "title": "模板保存/加载交错可覆盖新内容并卡 loading", "evidence": "保存成功作废旧加载后，旧 finally 仅按 serial 清除，可能永久禁用保存。", "fix": "保存捕获 revision，成功作废旧加载，finally 按 templatePendingLoads 计数清零。", "status": "fixed"},
+    {"id": "9", "level": "important", "location": "internal/server/server.go", "title": "合法自定义 Review ID 被 UUID 校验阻断", "evidence": "feature_x 可列出但详情/切换/导出返回 400。", "fix": "使用受限字符白名单并拒绝 `..`/斜杠/控制字符，保留路径穿越测试并增加 feature_x 全链路。", "status": "fixed"},
+    {"id": "10", "level": "important", "location": "internal/server/server.go", "title": "canonical Commit 阻断有效历史快照", "evidence": "读取 ReviewID 快照前先解析当前 Commit，缺失时无法导出。", "fix": "有效历史快照优先，只有实时生成 diff 或比较当前身份时解析 Commit。", "status": "fixed"},
+    {"id": "11", "level": "critical", "location": "web/src/components/ReviewHistoryModal.vue / internal/review/store.go", "title": "基线死文件和仅测试生产接口", "evidence": "ReviewHistoryModal 无 import，Store.Clear 仅测试调用。", "fix": "删除死组件、Clear 方法及对应测试，保留实际 Save 清空逻辑。", "status": "fixed"},
+    {"id": "12", "level": "important", "location": "docs 与任务看板", "title": "文档描述与最终实现/统计不一致", "evidence": "旧 API 清单、Review ID、响应字段、默认文件名、创建文件时机和测试数量过时。", "fix": "回写 README、system_design、unit_tests、规格、计划和看板；实测 88 Go + 20 Node 测试及三轮报告。", "status": "fixed"}
+  ],
+  "suggestions": [
+    {"group": "保持决策", "items": [
+      {"id": "S1", "location": "internal/export/export.go", "text": "branch 导出的 Comparison 元数据可作为后续增强，非本次阻断项。", "status": "accepted"},
+      {"id": "S2", "location": "web/tests", "text": "SSR helper 可去重；最终异步行为已由专项 fresh-eyes 和真实浏览器验证。", "status": "accepted"}
+    ]}
+  ],
+  "decisions": [
+    {"topic": "冻结判断", "source": "4 路冻结评审及后续专项复核", "note": "没有未解决 Critical/Important，剩余仅为人类性能/监听决策和明确记录的非阻断建议。"},
+    {"topic": "交付状态", "source": "iterative-feature-delivery", "note": "编码完成，未 commit、未 push；不创建 MR。"}
+  ],
+  "strengths": [
+    "所有终审问题均有对应真实 Git/API/前端行为回归，未以全绿但缺场景的测试替代验证。",
+    "初始化水合、导出、模板和初始化配置都有 serial/revision 保护，且覆盖了守卫自身触发状态变化的边界。",
+    "最终生产浏览器再次完成 working/branch/commit、完整文件和评论保存，证明终审修改未造成交互回归。"
+  ],
+  "verifications": [
+    {"who": "Go 冻结与专项复核", "what": "go test -race ./...、go vet ./...、go build ./cmd/wtf2pr", "result": "全部 PASS"},
+    {"who": "前端冻结与专项复核", "what": "npm test、npm run lint、npm run build", "result": "20 tests PASS；lint/build PASS"},
+    {"who": "主 agent 最终浏览器", "what": "最新生产 embed 的三种来源、来源恢复、水合、完整文件新旧侧与评论保存", "result": "Final browser smoke PASS"},
+    {"who": "文档与统计", "what": "go test -list '^Test' 和 web/tests 文件计数", "result": "88 个顶层 Go 测试函数 + 20 个 Node 测试"}
+  ],
+  "notes": "剪贴板权限和物理 Esc 注入限制如实保留；未将这些环境项冒充通过。",
+  "next_steps": ["删除临时脚本、E2E 仓库和无关构建产物。", "执行最终 CI 等效检查并报告上线顺序、回滚边界和未提交状态。"]
+}

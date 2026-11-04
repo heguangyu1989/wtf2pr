@@ -6,15 +6,18 @@
         <button class="text-gray-500 hover:text-gray-700" @click="$emit('close')">关闭</button>
       </div>
       <div class="p-4 overflow-auto text-sm space-y-3 leading-relaxed">
-        <p><strong>wtf2pr</strong> 是一个本地 Git 代码 Review 工具，用于将未提交的变更或某个 Commit 的 Diff 可视化展示，并输出结构化 Review 报告给 AI 修复。</p>
+        <p><strong>wtf2pr</strong> 是一个本地 Git 代码 Review 工具，用于查看变更、记录意见并输出结构化报告给 AI 修复。</p>
         <ul class="list-disc pl-5 space-y-1">
-          <li><strong>Working tree</strong>：查看当前工作目录所有未提交的变更（含已修改、已暂存、未跟踪的新文件）。</li>
+          <li><strong>未提交</strong>：查看当前工作目录所有未提交的变更（含已修改、已暂存、未跟踪的新文件）。</li>
           <li><strong>Commit</strong>：选择某个历史 Commit，查看该 Commit 的完整 Diff。</li>
-          <li><strong>添加 Review</strong>：点击代码行即可在对应行下方添加行级评论；点击文件标题栏“添加文件评论”可对整体文件发表意见。</li>
+          <li><strong>分支对比</strong>：选择一个目标本地分支，按“目标分支...HEAD”查看当前分支自共同祖先以来的提交变更，不含未提交修改。</li>
+          <li><strong>文件浏览</strong>：左侧支持树形、平铺、路径/类型/测试/文档排序和连续滚动，偏好会保存在当前浏览器。</li>
+          <li><strong>查看完整文件</strong>：文件标题栏可打开新旧版本，支持行号、复制、Esc 和遮罩关闭。</li>
+          <li><strong>添加 Review</strong>：在指定 Commit 模式中，点击代码行或“添加文件评论”记录意见。</li>
           <li><strong>保存 Review</strong>：点击右上角“保存 Review”，数据会自动持久化到 JSON 文件。</li>
-          <li><strong>导出</strong>：支持 Markdown / JSON / XML，仅导出包含 Review 的核心信息（文件、行号、对应代码、评论内容），避免冗余 Token。</li>
+          <li><strong>导出</strong>：支持 Markdown / JSON / XML / 自定义 Template，导出当前评论快照及关键代码，避免冗余 Token。</li>
         </ul>
-        <p class="text-xs text-gray-500 pt-2">快捷键：无 | 开发模式下前端通过 Vite Proxy 访问后端 API。</p>
+        <p class="text-xs text-gray-500 pt-2">快捷键：Esc 关闭完整文件弹窗 | 开发模式下前端通过 Vite Proxy 访问后端 API。</p>
       </div>
     </div>
   </div>

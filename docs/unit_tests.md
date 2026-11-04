@@ -1,104 +1,103 @@
-# 单元测试清单
+# 单元与集成测试清单
 
-本文档列出了 `wtf2pr` 项目中所有已实现的 Go 后端单元测试，按包分类说明。
-
----
+本文档按包说明 WTF2PR 当前测试。数量来自实跑 `go test -list '^Test'` 与 `npm test`，不是估计值。
 
 ## 执行方式
 
 ```bash
-# 运行全部测试
-go test ./...
+# 后端全部测试及竞态检测
+go test -race ./...
 
-# 运行指定包的测试并输出详情
+# 静态检查与构建
+go vet ./...
+go build ./cmd/wtf2pr
+
+# 指定后端包
 go test ./internal/git/ -v
 go test ./internal/review/ -v
 go test ./internal/export/ -v
 go test ./internal/server/ -v
+
+# 前端全部测试、lint 与构建
+cd web
+npm test
+npm run lint
+npm run build
 ```
 
----
+## 实测统计
+
+| 范围 | 顶层测试数 | 说明 |
+|------|------------|------|
+| `internal/git` | 40 | Diff 解析、raw 路径身份、分支与完整文件 |
+| `internal/review` | 6 | 内存/文件 Store、深拷贝、切换与并发 |
+| `internal/export` | 11 | Markdown / JSON / XML、评论代码定位 |
+| `internal/server` | 31 | 真实临时 Git 仓库上的 API 集成 |
+| Go 合计 | **88** | 不含子测试展开数量 |
+| `web/tests/apiClient.test.js` | 2 | Base/path/side 编码与 AbortSignal |
+| `web/tests/fileContentComponent.test.js` | 2 | 原生 dialog 与 diff 查看入口 |
+| `web/tests/fileExplorer.test.js` | 13 | 分类、树、排序、路径与节点 key |
+| `web/tests/fileExplorerComponent.test.js` | 2 | 连续渲染、无分页、目录选中筛选与恢复 |
+| `web/tests/workspaceComponent.test.js` | 2 | 来源空状态与统一导航 |
+| Node 合计 | **21** | 全部通过，未新增测试框架 |
 
 ## `internal/git`
 
-测试文件：`internal/git/parser_test.go`、`internal/git/git_test.go`
+### Diff 与分支
 
-| 测试函数 | 说明 |
-|----------|------|
-| `TestParseDiffEmpty` | 验证空 diff 字符串返回空文件列表 |
-| `TestParseDiffNewFile` | 验证新增文件（`new file mode`）的 diff 解析，包含 hunk 与 addition 行号 |
-| `TestParseDiffDeletedFile` | 验证删除文件（`deleted file mode`）的 diff 解析，包含 deletion 行号 |
-| `TestParseDiffModifiedFile` | 验证修改文件的 diff 解析，包含 context / deletion / addition 混合行 |
-| `TestParseDiffBinaryFile` | 验证二进制文件标记（`Binary files differ`）正确识别，无 hunks |
-| `TestParseDiffMultipleFiles` | 验证同一 diff 文本中包含多个文件时分别解析 |
-| `TestParseDiffMultipleHunks` | 验证单个文件包含多个 hunk 时全部解析 |
-| `TestParseHunkHeaderInvalid` | 验证非法 hunk header 返回错误 |
-| `TestParseRange` | 验证 hunk range 解析，含 `start,lines` 与仅 `start` 两种情况 |
-| `TestParseDiffLine` | 验证单行 diff 前缀解析（`+`、`-`、空格、`\`）及行号递增逻辑 |
-| `TestParseDiffWithLongContent` | 验证超长内容行（2000 字符）解析不丢失数据 |
-| `TestReadUntrackedFileAsDiff_Text` | 验证未跟踪文本文件被构造为完整 `FileDiff`（新增模式） |
-| `TestReadUntrackedFileAsDiff_Binary` | 验证未跟踪二进制文件识别为 `IsBinary=true` |
-| `TestReadUntrackedFileAsDiff_NotFound` | 验证读取不存在的未跟踪文件返回错误 |
-| `TestGetUntrackedFiles` | 调用 `git ls-files` 接口，确保无 panic |
+- Unified diff 的新增、删除、修改、二进制、多文件、多 hunk、长行与非法 hunk header。
+- 空格路径、Git 引号 Unicode、尾随空格及 `and/b` 路径别名。
+- `main` / `master` 默认分支优先级、detached HEAD、无可用目标分支、同名 branch/tag 及列表→diff round-trip。
+- 三点 diff 排除 main 独有提交和未提交修改，精确核对 merge-base。
+- merge commit 保留 Git 原生合并 diff，不与单父 raw diff 强制对齐。
 
----
+### 完整文件与路径安全
+
+- working/commit/branch 的新旧版本、未跟踪、重命名、重命名环、同路径删除+未跟踪新增。
+- 新增旧侧、删除新侧返回 `exists=false`；错侧重命名和未匹配路径被拒绝。
+- 文本↔二进制双向转换逐侧判断内容，空文件与 NUL 二进制分别处理。
+- `..`、绝对路径、非规范路径、未修改文件、`.git`、非仓库和未知 revision 的状态分类。
+- 符号链接返回链接文本，不读取仓库外或根内目标；普通文件使用 `OpenRoot` 与 `SameFile` 防护。
+- 40 位不存在哈希拒绝，大写哈希规范化，选项形式 revision 不产生输出文件。
+- raw NUL 元数据在三种来源下覆盖真实路径与负向别名。
 
 ## `internal/review`
 
-测试文件：`internal/review/store_test.go`
-
-| 测试函数 | 说明 |
-|----------|------|
-| `TestNewStore_MemoryOnly` | 验证无文件路径时创建纯内存 Store，初始为空 |
-| `TestStoreSaveAndGet` | 验证 `Save` 后 `Get` 返回正确数据，且返回的是深拷贝（修改结果不影响 Store） |
-| `TestStoreFilePersistence` | 验证带文件路径的 Store 能将评论持久化到 JSON，并从 JSON 重新加载 |
-| `TestStoreClear` | 验证 `Clear` 清空内存与磁盘文件 |
-| `TestStoreSwitchFile` | 验证 `SwitchFile` 切换存储文件后自动加载该文件已有评论，且旧文件数据不受影响 |
-| `TestStoreConcurrency` | 高并发读写测试（100 协程），验证 `sync.RWMutex` 无线程安全问题 |
-
----
+- 纯内存 Store 初始化、保存与深拷贝。
+- JSON 持久化、重新加载、切换文件及旧文件不受影响。
+- 100 协程并发读写验证 `sync.RWMutex`。
+- 空评论使用 Save 的现有清空语义，不再保留仅测试调用的 `Clear` 生产接口。
 
 ## `internal/export`
 
-测试文件：`internal/export/export_test.go`
-
-| 测试函数 | 说明 |
-|----------|------|
-| `TestExportMarkdown_NoComments` | 无评论时导出 Markdown 仅含 Commit 元信息与 "No review comments" 提示 |
-| `TestExportMarkdown_WithComments` | 有评论时仅导出含评论的文件，包含行号、对应代码、hunk header |
-| `TestExportJSON` | 验证 JSON 导出格式合法，且仅包含被 review 的文件 |
-| `TestExportXML` | 验证 XML 导出格式合法，包含正确标签与内容 |
-| `TestExportUnsupportedFormat` | 验证传入不支持的格式（如 `yaml`）返回错误 |
-| `TestFindCodeContext_NewLine` | 验证通过 `new:{lineNo}` 在 diff 中定位到对应新增代码行 |
-| `TestFindCodeContext_OldLine` | 验证通过 `old:{lineNo}` 在 diff 中定位到对应删除代码行 |
-| `TestFindCodeContext_NotFound` | 验证不存在的行号返回空字符串 |
-| `TestFindCodeContext_InvalidLineKey` | 验证非法 `lineKey` 格式返回空字符串 |
-| `TestLineKeyToDisplay` | 验证 `lineKey` 空值显示为 `file`，非空保持原样 |
-
----
+- 无评论、文件级/行级评论、仅含评论文件和关键代码。
+- Markdown / JSON / XML 输出结构及不支持格式错误。
+- old/new line key 定位、无效 key 与不存在行号。
+- 自定义模板渲染和错误传播。
 
 ## `internal/server`
 
-测试文件：`internal/server/server_test.go`
+- 配置、初始 Review 对象、保存/读取评论与空历史数组。
+- working/commit/branch diff、分支列表、Commit 分页和缺失参数错误。
+- 完整文件 API、路径穿越、未修改文件、未知来源与仓库故障的 400/500 分类。
+- Review 新建、历史列表、详情、切换与空评论过滤。
+- 合法 `feature_x` 的详情、切换和导出完整链路；恶意 ReviewID 继续拒绝。
+- Markdown / JSON / XML / Template 导出、当前草稿、旧客户端省略 comments 的兼容回退。
+- 跨 Commit 评论隔离、stale working/branch 快照重算、缺失 Commit 的有效历史快照导出。
+- canonical Commit 保存、自定义模板保存与读取。
+- 40 组 `/review/new` 与 `/api/config` 并发请求，供 race detector 检查 active Review 路径。
 
-| 测试函数 | 说明 |
-|----------|------|
-| `TestHandleGetConfig` | 验证 `GET /api/config` 返回当前 review 文件路径配置 |
-| `TestHandleGetReview` | 验证 `GET /api/review` 初始返回空数组 |
-| `TestHandleSaveReview` | 验证 `POST /api/review` 保存后，再次 GET 能正确取回 |
-| `TestHandleGetDiff_Working` | 在真实临时 Git 仓库中修改文件，验证 `GET /api/diff?type=working` 返回 diff 数据 |
-| `TestHandleGetCommits` | 在真实临时 Git 仓库中验证 `GET /api/commits` 返回分页 Commit 列表 |
-| `TestHandleGetReviews` | 验证 `GET /api/reviews` 返回所有历史 review 文件列表 |
-| `TestHandleNewReview` | 验证 `POST /api/review/new` 生成 UUID reviewID，创建空存储文件，并更新当前 review |
-| `TestHandleSwitchReview` | 验证 `POST /api/review/switch` 能切换到历史 review 并加载其评论数据；不存在时返回 400 |
-| `TestHandleExport` | 验证 `POST /api/export` 返回指定格式的导出内容 |
+## `web/tests`
 
-> **说明**：`server` 测试使用真实 `git init` 创建的临时仓库，确保 API 与 Git 命令的集成链路完整可用。
+- API：branch Base、完整文件 path/side、URL 编码和 AbortSignal 传递。
+- 文件分类：测试、文档、扩展名、自然路径、升降序、输入不变性。
+- 树：目录优先、深层目录、空路径段、测试组内排序、file→directory 唯一 key。
+- 默认文件：优先首个文本 diff，只有二进制时回退。
+- 完整文件：原生 `<dialog>`、old/new 按钮与 editable/readonly 查看入口。
+- 工作区：三种来源、单分支空状态、统一代码审查导航。
 
----
+## 真实浏览器补充验证
 
-## 测试统计
+隔离 main/feature 仓库执行过三种来源、39 文件连续滚动、树/平铺、全部排序、目录折叠、Commit 分页、完整文件新旧侧与关闭/重开、二进制/空/删除状态、文件级和行级评论保存、四种导出、历史 Review 和模板操作。生产 embed 在 1440/768/390 视口下完成视觉检查，结果为 0 FAIL。
 
-- **总测试包数**：4 个
-- **总测试函数**：约 30 个
-- **全部通过状态**：✅ `PASS`
+浏览器剪贴板权限和 macOS 原生键盘截图通道存在环境限制，未将对应能力标为 PASS；复制失败降级、按钮与遮罩关闭已实点验证。
