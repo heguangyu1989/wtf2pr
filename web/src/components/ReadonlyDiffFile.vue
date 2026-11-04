@@ -1,12 +1,19 @@
 <template>
-  <div class="border rounded-lg overflow-hidden bg-white dark:bg-gray-900">
+  <div class="diff-file overflow-hidden rounded-lg border bg-white dark:bg-gray-900">
     <div class="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b text-sm font-medium flex items-center justify-between">
-      <div class="flex items-center gap-2">
+      <div class="flex min-w-0 items-center gap-2">
         <span v-if="file.isNew" class="text-green-600">+</span>
         <span v-else-if="file.isDeleted" class="text-red-600">−</span>
         <span v-else class="text-gray-500">M</span>
-        <span class="font-mono">{{ displayPath }}</span>
+        <span class="truncate font-mono">{{ displayPath }}</span>
       </div>
+      <button
+        type="button"
+        class="shrink-0 text-xs px-2 py-1 rounded bg-white dark:bg-gray-700 border hover:bg-gray-50"
+        @click="$emit('view-full')"
+      >
+        查看完整文件
+      </button>
     </div>
 
     <!-- Existing comments for this file -->
@@ -25,7 +32,7 @@
       <table class="w-full text-sm border-collapse">
         <tbody>
           <template v-for="(hunk, hi) in file.hunks" :key="hi">
-            <tr class="bg-gray-50 dark:bg-gray-800">
+            <tr class="diff-hunk">
               <td colspan="3" class="px-2 py-1 text-gray-500 font-mono text-xs select-none">
                 @@ -{{ hunk.oldStart }},{{ hunk.oldLines }} +{{ hunk.newStart }},{{ hunk.newLines }} @@
               </td>
@@ -61,14 +68,15 @@ const props = defineProps({
   file: { type: Object, required: true },
   comments: { type: Array, default: () => [] },
 })
+defineEmits(['view-full'])
 
 const displayPath = computed(() => props.file.newFile || props.file.oldFile || 'unknown')
 
 const fileComments = computed(() => props.comments.filter(c => c.filePath === displayPath.value))
 
 function lineClass(type) {
-  if (type === 'addition') return 'bg-green-50 dark:bg-green-900/10'
-  if (type === 'deletion') return 'bg-red-50 dark:bg-red-900/10'
+  if (type === 'addition') return 'diff-addition'
+  if (type === 'deletion') return 'diff-deletion'
   return ''
 }
 function linePrefix(type) {

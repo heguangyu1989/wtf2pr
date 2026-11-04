@@ -6,6 +6,7 @@ type DiffType string
 const (
 	DiffTypeWorking DiffType = "working"
 	DiffTypeCommit  DiffType = "commit"
+	DiffTypeBranch  DiffType = "branch"
 )
 
 // LineType 表示 diff 行的类型
@@ -50,18 +51,64 @@ const (
 	ExportFormatTemplate ExportFormat = "template"
 )
 
+// FileSide 表示完整文件的变更侧
+type FileSide string
+
+const (
+	FileSideOld FileSide = "old"
+	FileSideNew FileSide = "new"
+)
+
+// FileContentRequest 完整文件内容请求
+type FileContentRequest struct {
+	Type   DiffType `json:"type" form:"type" binding:"required"`
+	Commit string   `json:"commit,omitempty" form:"commit,omitempty"`
+	Base   string   `json:"base,omitempty" form:"base,omitempty"`
+	Path   string   `json:"path" form:"path" binding:"required"`
+	Side   FileSide `json:"side" form:"side" binding:"required,oneof=old new"`
+}
+
+// FileContentResponse 完整文件内容响应
+type FileContentResponse struct {
+	Content  string `json:"content"`
+	Exists   bool   `json:"exists"`
+	IsBinary bool   `json:"isBinary"`
+}
+
 // DiffRequest 请求 diff 的参数
 type DiffRequest struct {
 	Type   DiffType `json:"type" form:"type" binding:"required"`
 	Commit string   `json:"commit,omitempty" form:"commit,omitempty"`
+	Base   string   `json:"base,omitempty" form:"base,omitempty"`
+}
+
+// ComparisonInfo 分支三点对比信息
+type ComparisonInfo struct {
+	Base      string `json:"base"`
+	Head      string `json:"head"`
+	MergeBase string `json:"mergeBase"`
+}
+
+// BranchInfo 本地分支信息
+type BranchInfo struct {
+	Name    string `json:"name"`
+	Current bool   `json:"current"`
+}
+
+// BranchListResponse 本地分支列表
+type BranchListResponse struct {
+	Current string       `json:"current"`
+	Default string       `json:"default"`
+	List    []BranchInfo `json:"list"`
 }
 
 // DiffResponse 返回的 diff 数据
 type DiffResponse struct {
-	Type       DiffType    `json:"type"`
-	Commit     string      `json:"commit,omitempty"`
-	CommitInfo *CommitInfo `json:"commitInfo,omitempty"`
-	Files      []FileDiff  `json:"files"`
+	Type       DiffType        `json:"type"`
+	Commit     string          `json:"commit,omitempty"`
+	CommitInfo *CommitInfo     `json:"commitInfo,omitempty"`
+	Comparison *ComparisonInfo `json:"comparison,omitempty"`
+	Files      []FileDiff      `json:"files"`
 }
 
 // CommitInfo commit 信息
@@ -156,7 +203,9 @@ type ExportRequest struct {
 	Format   ExportFormat `json:"format" binding:"required,oneof=markdown json xml template"`
 	Type     DiffType     `json:"type" binding:"required"`
 	Commit   string       `json:"commit,omitempty"`
+	Base     string       `json:"base,omitempty"`
 	ReviewID string       `json:"reviewID,omitempty"`
+	Comments []Comment    `json:"comments,omitempty"`
 }
 
 // ExportResponse 导出响应

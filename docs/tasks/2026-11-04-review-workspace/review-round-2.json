@@ -1,0 +1,62 @@
+{
+  "review": {
+    "id": "R2-20261104-wtf2pr-review-workspace",
+    "title": "WTF2PR 审查工作区重构 · 第二轮全面与简化评审",
+    "date": "2026-11-04",
+    "machine": "macOS 本地开发机",
+    "method": "4 路 fresh-eyes 全面评审 + 修复后专项独立复查",
+    "task": "wtf2pr-review-workspace",
+    "ts": "202611041510",
+    "report_path": "docs/tasks/2026-11-04-review-workspace/review-round-2.html",
+    "projects": ["wtf2pr"],
+    "scopes": [{"repo": "wtf2pr", "base": "008d392（工作区全部变更）", "branch": "feat/review-workspace-redesign", "stat": "第二轮正确性、安全、并发、契约与简化修复", "commits": "未提交工作区"}],
+    "out_of_scope": "Q1-Q4 性能与默认监听策略仍由人类决策；旧 []Comment 解码统一继续登记技术债。",
+    "verdict": "第二轮新发现的 Critical/Important 已全部修复，专项复查无 Critical/Important。可进入第三轮代码冻结确认。",
+    "verdict_level": "warn"
+  },
+  "summary_rows": [
+    {"cells": ["wtf2pr（4 路全面 + 专项复查）", "11 组已修复", "4 项待决策", "2 项记录", "◐ 全量验证通过，进入冻结评审"]}
+  ],
+  "confirmations": [
+    {"id": "Q1", "title": "默认监听与 CORS/鉴权", "background": "全文接口仍沿用现有 0.0.0.0 与宽松 CORS 默认值。", "options": "建议默认 127.0.0.1，远程模式显式开启并加 token。", "status": "pending"},
+    {"id": "Q2", "title": "全文读取重复计算 diff", "background": "路径授权现改为 NUL raw 元数据，但完整文件打开仍会计算 diff。", "options": "建议后续使用轻量 name-status/raw 快照或同 target 复用。", "status": "pending"},
+    {"id": "Q3", "title": "文件与 diff 大小边界", "background": "普通文件和 diff 仍完整读取/渲染，阈值属于产品决策。", "options": "建议设置明确预览上限并区分下载与预览。", "status": "pending"},
+    {"id": "Q4", "title": "服务端取消传播", "background": "前端 AbortController 已防旧响应覆盖，服务端 Git 工作仍继续。", "options": "建议 Request.Context 贯穿 Git 子进程并评估并发上限。", "status": "pending"}
+  ],
+  "findings": [
+    {"id": "1", "level": "critical", "location": "internal/git/parser.go / raw.go", "title": "空格、引号和 and/b 路径别名可绕过授权", "evidence": "展示用 patch 行无法无歧义表达所有合法 Git 路径，可能映射到未修改 secret。", "fix": "working/commit/branch 全部使用 --raw -z、diff-tree -r 与 -M 建立真实路径，NUL 解析后严格校验数量与新旧侧。", "status": "fixed"},
+    {"id": "2", "level": "important", "location": "internal/git/content.go", "title": "文本与二进制互转时文本侧被隐藏", "evidence": "整份 FileDiff 的 IsBinary 在读取前短路，文本侧无法预览。", "fix": "按请求侧读取数据后分别做 NUL 检测，新增双向转换测试。", "status": "fixed"},
+    {"id": "3", "level": "important", "location": "internal/git/content.go / git.go", "title": "40 位哈希捷径跳过存在性和规范化", "evidence": "全零哈希曾被认为存在，大写哈希与小写持久身份不一致。", "fix": "删除捷径，所有输入统一 rev-parse --verify，新增不存在和大写哈希测试。", "status": "fixed"},
+    {"id": "4", "level": "important", "location": "internal/git/git.go", "title": "同名 tag 下分支列表不能 round-trip", "evidence": "refname:short 返回 heads/main，无法再查询 refs/heads/heads/main。", "fix": "改用 refname:lstrip=2，新增 GetBranches→GetDiff 测试。", "status": "fixed"},
+    {"id": "5", "level": "critical", "location": "internal/server/server.go", "title": "保存与新建/切换 Review 可写错文件", "evidence": "慢 diff 期间 active store 可切换，旧保存继续写入新文件。", "fix": "前后端统一 mutation 锁；服务端 RWMutex 覆盖所有 reviewFile 读写及复合快照，新增并发 race 测试。", "status": "fixed"},
+    {"id": "6", "level": "important", "location": "internal/server/server.go", "title": "评论回退与 canonical commit 身份", "evidence": "HEAD 可移动导致评论漂移；省略 comments 可混入其他 Commit。", "fix": "保存/实时导出固定完整哈希；回退要求 type 和 canonical commit 一致。", "status": "fixed"},
+    {"id": "7", "level": "important", "location": "internal/server/server.go", "title": "当前 working 与历史快照语义", "evidence": "当前 working 会重放旧 diff；缺失 Commit 又可能阻断有效历史快照。", "fix": "当前 working 永远重算；ReviewID 有效快照优先，只有实时生成时才解析 Commit。", "status": "fixed"},
+    {"id": "8", "level": "important", "location": "internal/git/content.go / server.go", "title": "缺失 Base 与 Git 错误分类不一致", "evidence": "file/content 和 export 缺失 Base 返回 500。", "fix": "空 Base 使用 ErrInvalidFileContent，三个 handler 统一 writeGitError，保留仓库故障 500。", "status": "fixed"},
+    {"id": "9", "level": "critical", "location": "internal/git/git.go / content.go", "title": "未跟踪读取存在检查到打开的符号链接竞态", "evidence": "Lstat 后 os.ReadFile 可跟随替换链接。", "fix": "未跟踪 diff 复用 readWorkingFile 的 Lstat/Readlink/OpenRoot/SameFile 防护，移除重复实现。", "status": "fixed"},
+    {"id": "10", "level": "important", "location": "web/src/App.vue", "title": "模板保存/加载交错可覆盖新模板或卡 loading", "evidence": "保存 pending 中编辑、离开重进、保存成功作废旧请求都可能破坏状态。", "fix": "保存捕获 revision，成功作废旧加载并用 templatePendingLoads 正确清零，失败保留编辑内容。", "status": "fixed"},
+    {"id": "11", "level": "important", "location": "web/src/components/DiffViewer.vue / style.css / 组件", "title": "窄屏 diff 可为零高度且暗色状态对比不足", "evidence": "38vh 固定第一行可挤掉第二行；red/green/gray 浅色值在暗背景低于 4.5:1。", "fix": "改为容器内 2:3 比例行；错误、状态和辅助文本统一语义变量。", "status": "fixed"},
+    {"id": "12", "level": "important", "location": "internal/git/content_test.go / server_test.go", "title": "真实边界与并发测试缺口", "evidence": "Commit 特殊路径测试未覆盖 working/branch；handler 并发和 stale marker 不足。", "fix": "参数化三种来源及负向别名，加入 FIRST/SECOND、历史缺失 Commit 和 40 组并发请求。", "status": "fixed"}
+  ],
+  "suggestions": [
+    {"group": "记录但不阻断", "items": [
+      {"id": "S1", "location": "internal/export/export.go", "text": "branch 导出的 Comparison 元数据可进一步丰富，但当前用户未要求，保留后续增强。", "status": "accepted"},
+      {"id": "S2", "location": "web/tests", "text": "SSR helper 可去重；异步行为已由真实浏览器和专项复查覆盖。", "status": "accepted"}
+    ]}
+  ],
+  "decisions": [
+    {"topic": "raw NUL 路径身份", "source": "第二轮安全复查", "note": "不再以展示 patch 文本作为授权来源，diff-tree 递归和 rename 已与 patch 命令统一。"},
+    {"topic": "性能与默认监听", "source": "两轮安全与性能评审", "note": "Q1-Q4 保持人类决策，未擅自扩大本次范围。"}
+  ],
+  "strengths": [
+    "raw NUL 元数据覆盖 working/commit/branch 及负向别名，解决展示文本无法无歧义表达路径的问题。",
+    "服务端 RWMutex 与前端 mutation 锁同时覆盖，读写 Store 与 reviewFile 一致性有真实 race 验证。",
+    "模板保存、加载、编辑和作废请求均有 serial/revision/pending 计数保护，乱序场景经独立实例复核。"
+  ],
+  "verifications": [
+    {"who": "Go 全面与专项评审", "what": "go test -race ./...、go vet ./...、go build ./cmd/wtf2pr", "result": "全部 PASS"},
+    {"who": "前端全面与专项评审", "what": "npm test、lint、build", "result": "20 tests PASS；lint/build PASS"},
+    {"who": "主 agent", "what": "参数化特殊路径、并发、stale marker、历史快照和模板交错修复", "result": "全部新增回归 PASS"}
+  ],
+  "notes": "Q1-Q4 未拍板；物理 Esc 和剪贴板权限限制沿用第一轮如实记录。",
+  "next_steps": ["第三轮代码冻结评审，检查最终 diff、两轮处置与剩余文档漂移。", "冻结后重跑浏览器关键路径和 CI 等效检查。"]
+}

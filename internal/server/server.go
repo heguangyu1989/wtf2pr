@@ -2,12 +2,15 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +28,7 @@ type Server struct {
 	workDir    string
 	reviewFile string
 	staticFS   fs.FS
+	reviewMu   sync.RWMutex
 }
 
 // NewServer 创建 server
@@ -50,6 +54,8 @@ func (s *Server) setupRoutes() {
 	{
 		api.GET("/diff", s.handleGetDiff)
 		api.GET("/commits", s.handleGetCommits)
+		api.GET("/branches", s.handleGetBranches)
+		api.GET("/file/content", s.handleGetFileContent)
 		api.GET("/config", s.handleGetConfig)
 		api.GET("/review", s.handleGetReview)
 		api.GET("/review/detail", s.handleGetReviewDetail)
@@ -91,6 +97,8 @@ func corsMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) handleGetConfig(c *gin.Context) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
 	reviewFileName := filepath.Base(s.reviewFile)
 	reviewID := ""
 	if strings.HasPrefix(reviewFileName, "review_") && strings.HasSuffix(reviewFileName, ".json") {
@@ -122,6 +130,15 @@ func (s *Server) handleGetCommits(c *gin.Context) {
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: resp})
 }
 
+func (s *Server) handleGetBranches(c *gin.Context) {
+	branches, err := git.GetBranches(s.workDir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: branches})
+}
+
 func (s *Server) handleGetDiff(c *gin.Context) {
 	var req models.DiffRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -131,23 +148,57 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 	if req.Type == "" {
 		req.Type = models.DiffTypeWorking
 	}
+	switch req.Type {
+	case models.DiffTypeWorking:
+	case models.DiffTypeCommit:
+		if strings.TrimSpace(req.Commit) == "" {
+			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "commit is required"})
+			return
+		}
+	case models.DiffTypeBranch:
+		if strings.TrimSpace(req.Base) == "" {
+			c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "base branch is required"})
+			return
+		}
+	default:
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "unsupported diff type"})
+		return
+	}
 	diff, err := git.GetDiff(s.workDir, req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		writeGitError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: diff})
 }
 
+func (s *Server) handleGetFileContent(c *gin.Context) {
+	var req models.FileContentRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	content, err := git.GetFileContent(s.workDir, req)
+	if err != nil {
+		writeGitError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: content})
+}
+
 func (s *Server) handleGetReview(c *gin.Context) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
 	persisted := s.store.GetPersisted()
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: persisted})
 }
 
 func (s *Server) handleGetReviewDetail(c *gin.Context) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
 	id := c.Query("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "id is required"})
+	if !validReviewID(id) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 		return
 	}
 	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+id+".json")
@@ -177,10 +228,31 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 }
 
 func (s *Server) handleSaveReview(c *gin.Context) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
 	var req models.SaveReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
+	}
+	if req.Type == "" {
+		req.Type = models.DiffTypeWorking
+	}
+	if req.Type != models.DiffTypeWorking && req.Type != models.DiffTypeCommit {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "only working and commit reviews can be saved"})
+		return
+	}
+	if req.Type == models.DiffTypeCommit && strings.TrimSpace(req.Commit) == "" {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "commit is required"})
+		return
+	}
+	if req.Type == models.DiffTypeCommit {
+		resolvedCommit, err := git.ResolveCommit(s.workDir, req.Commit)
+		if err != nil {
+			writeGitError(c, err)
+			return
+		}
+		req.Commit = resolvedCommit
 	}
 
 	reviewFileName := filepath.Base(s.reviewFile)
@@ -208,12 +280,12 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 
 	// 获取当前 diff 上下文并一起保存
 	var diffData *models.DiffResponse
-	if req.Type != "" {
-		diff, err := git.GetDiff(s.workDir, models.DiffRequest{Type: req.Type, Commit: req.Commit})
-		if err == nil {
-			diffData = diff
-		}
+	diff, err := git.GetDiff(s.workDir, models.DiffRequest{Type: req.Type, Commit: req.Commit})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+		return
 	}
+	diffData = diff
 
 	createdAt := old.CreatedAt
 	if createdAt == 0 {
@@ -234,7 +306,9 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 }
 
 func (s *Server) handleGetReviews(c *gin.Context) {
-	var items []models.ReviewListItem
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	items := make([]models.ReviewListItem, 0)
 	dir := filepath.Dir(s.reviewFile)
 	if dir == "." || dir == "" {
 		dir, _ = os.Getwd()
@@ -288,6 +362,8 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 }
 
 func (s *Server) handleNewReview(c *gin.Context) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
 	id, err := uuid.NewRandom()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
@@ -307,9 +383,15 @@ func (s *Server) handleNewReview(c *gin.Context) {
 }
 
 func (s *Server) handleSwitchReview(c *gin.Context) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
 	var req models.SwitchReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	if !validReviewID(req.ReviewID) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
 		return
 	}
 	reviewFile := filepath.Join(filepath.Dir(s.reviewFile), "review_"+req.ReviewID+".json")
@@ -329,12 +411,17 @@ func (s *Server) handleSwitchReview(c *gin.Context) {
 }
 
 func (s *Server) handleExport(c *gin.Context) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
 	var req models.ExportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-
+	if req.ReviewID != "" && !validReviewID(req.ReviewID) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "invalid review id"})
+		return
+	}
 	var diff *models.DiffResponse
 	var comments []models.Comment
 
@@ -346,7 +433,7 @@ func (s *Server) handleExport(c *gin.Context) {
 		if data, err := os.ReadFile(reviewFile); err == nil {
 			var pr models.PersistedReview
 			if err := json.Unmarshal(data, &pr); err == nil {
-				if pr.Diff != nil {
+				if pr.Diff != nil && req.Type != models.DiffTypeBranch {
 					diff = pr.Diff
 				}
 				comments = pr.Comments
@@ -354,23 +441,42 @@ func (s *Server) handleExport(c *gin.Context) {
 		}
 	}
 
+	if req.Type == models.DiffTypeCommit && diff == nil {
+		resolvedCommit, err := git.ResolveCommit(s.workDir, req.Commit)
+		if err != nil {
+			writeGitError(c, err)
+			return
+		}
+		req.Commit = resolvedCommit
+	}
 	if diff == nil {
 		persisted := s.store.GetPersisted()
-		if persisted.Diff != nil && string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
+		if persisted.Diff != nil && req.Type != models.DiffTypeBranch && req.Type != models.DiffTypeWorking && string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
 			diff = persisted.Diff
 		} else {
-			diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit}
+			diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit, Base: req.Base}
 			got, err := git.GetDiff(s.workDir, diffReq)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
+				writeGitError(c, err)
 				return
 			}
 			diff = got
 		}
 	}
 
-	if comments == nil {
-		comments = s.store.Get()
+	if req.ReviewID != "" {
+		if comments == nil {
+			comments = []models.Comment{}
+		}
+	} else if (req.Type == models.DiffTypeWorking || req.Type == models.DiffTypeCommit) && req.Comments == nil {
+		persisted := s.store.GetPersisted()
+		if string(req.Type) == persisted.Type && req.Commit == persisted.Commit {
+			comments = s.store.Get()
+		} else {
+			comments = []models.Comment{}
+		}
+	} else {
+		comments = req.Comments
 	}
 
 	var content string
@@ -406,6 +512,8 @@ func (s *Server) templatePath() string {
 }
 
 func (s *Server) handleGetTemplate(c *gin.Context) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
 	content, _ := os.ReadFile(s.templatePath())
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
 		"content": string(content),
@@ -413,6 +521,8 @@ func (s *Server) handleGetTemplate(c *gin.Context) {
 }
 
 func (s *Server) handleSaveTemplate(c *gin.Context) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
 	var req struct {
 		Content string `json:"content"`
 	}
@@ -425,6 +535,20 @@ func (s *Server) handleSaveTemplate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok"})
+}
+
+func writeGitError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, git.ErrInvalidFileContent) {
+		status = http.StatusBadRequest
+	}
+	c.JSON(status, models.APIResponse{Code: status, Message: err.Error()})
+}
+
+var reviewIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func validReviewID(id string) bool {
+	return len(id) > 0 && len(id) <= 128 && !strings.Contains(id, "..") && reviewIDPattern.MatchString(id)
 }
 
 func getTimestamp() int64 {

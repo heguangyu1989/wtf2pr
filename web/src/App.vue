@@ -1,9 +1,13 @@
 <template>
-  <div class="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col h-screen overflow-hidden">
+  <div class="flex h-dvh min-h-0 flex-col overflow-hidden bg-[var(--ground)] text-[var(--text)]">
     <AppHeader
       :saved="saved"
       :export-format="exportFormat"
       :review-label="reviewLabel"
+      :can-save="canSave"
+      :can-export="canExport"
+      :saving="saving"
+      save-reason="只有选择具体 Commit 后才能保存 Review"
       @save-review="saveReview"
       @do-export="doExport"
       @new-review="createNewReview"
@@ -11,145 +15,112 @@
       @update:export-format="exportFormat = $event"
     />
 
-    <!-- Tabs -->
-    <div class="max-w-7xl w-full mx-auto px-4 pt-2 shrink-0">
-      <div class="flex gap-1 border-b dark:border-gray-700">
+    <div class="w-full shrink-0 overflow-x-auto px-4 lg:px-5">
+      <nav class="flex min-w-max gap-5" aria-label="主导航">
         <button
           v-for="t in tabs"
           :key="t.key"
-          class="px-4 py-2 text-sm rounded-t transition"
-          :class="activeTab === t.key ? 'bg-white dark:bg-gray-900 border-t border-x dark:border-gray-700 font-medium text-blue-600' : 'text-gray-500 hover:text-gray-700'"
+          class="min-h-9 border-b-2 px-0.5 text-sm transition"
+          :class="activeTab === t.key ? 'border-[var(--accent)] font-medium text-[var(--text)]' : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'"
+          :aria-current="activeTab === t.key ? 'page' : undefined"
           @click="activeTab = t.key"
         >
           {{ t.label }}
         </button>
-      </div>
+      </nav>
     </div>
 
-    <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4 overflow-hidden">
-      <!-- Working -->
-      <template v-if="activeTab === 'working'">
-        <div class="h-full">
-          <DiffViewer
-            :diff-data="diffData"
-            :comments="[]"
-            :loading="loading"
-            :error="error"
-            :readonly="true"
-          />
-        </div>
+    <main class="app-sheet mx-3 mb-3 min-h-0 w-auto flex-1 overflow-hidden p-4">
+      <template v-if="activeTab === 'review'">
+        <ReviewWorkspace
+          v-model:target="reviewTarget"
+          :comments="comments"
+          :review-hydrated="reviewHydrated"
+          :review-load-error="reviewLoadError"
+          @retry-review-load="retryReviewLoad"
+          @update:comments="onCommentsUpdate"
+        />
       </template>
 
-      <!-- Commit -->
-      <template v-if="activeTab === 'commit'">
-        <div class="flex flex-col h-full gap-3">
-          <div class="flex flex-wrap items-center gap-2 shrink-0">
-            <select
-              v-model="selectedCommitHash"
-              class="border rounded px-2 py-1 text-sm w-64 bg-white dark:bg-gray-900"
-            >
-              <option value="">选择 Commit</option>
-              <option v-for="c in commitList" :key="c.hash" :value="c.hash">
-                {{ c.hash.substring(0, 7) }} - {{ c.message }}
-              </option>
-            </select>
-            <div class="flex items-center gap-1 text-sm">
-              <button
-                class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
-                :disabled="commitPage <= 1"
-                @click="changeCommitPage(-1)"
-              >
-                上一页
-              </button>
-              <span class="text-xs text-gray-500 whitespace-nowrap">{{ commitPage }} / {{ commitTotalPages }}</span>
-              <button
-                class="px-2 py-1 border rounded disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
-                :disabled="commitPage >= commitTotalPages"
-                @click="changeCommitPage(1)"
-              >
-                下一页
-              </button>
-            </div>
-          </div>
-          <div class="flex-1 overflow-hidden">
-            <DiffViewer
-              :diff-data="diffData"
-              :comments="comments"
-              :loading="loading"
-              :error="error"
-              :readonly="false"
-              :commit-info="diffData?.commitInfo"
-              @update:comments="onCommentsUpdate"
-            />
-          </div>
-        </div>
-      </template>
-
-      <!-- History -->
       <template v-if="activeTab === 'history'">
         <div class="h-full overflow-y-auto">
-          <div v-if="!reviewList.length" class="text-sm text-gray-500 text-center py-12">暂无历史 Review</div>
-          <div v-else class="space-y-3 max-w-3xl">
-            <div
+          <header class="mb-5">
+            <h1 class="text-[22px] font-semibold tracking-[-0.02em]">历史 Review</h1>
+            <p class="mt-1 text-xs text-[var(--muted)]">继续一次 Commit 审查，或查看已经保存的意见</p>
+          </header>
+          <div v-if="!reviewList.length" class="rounded-lg border border-dashed py-12 text-center text-sm text-[var(--muted)]">暂无历史 Review</div>
+          <div v-else class="grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            <article
               v-for="r in reviewList"
               :key="r.reviewID"
-              class="border rounded-lg p-4 bg-white dark:bg-gray-900"
+              class="rounded-lg border bg-[var(--surface)] p-4 dark:border-gray-700"
             >
-              <div class="flex items-center justify-between">
-                <div class="font-mono text-sm font-medium">{{ r.reviewID.substring(0, 8) }}</div>
-                <div class="text-xs px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
+              <div class="flex items-center justify-between gap-3">
+                <div class="truncate font-mono text-sm font-medium" :title="r.reviewID">{{ r.reviewID.substring(0, 8) }}</div>
+                <div class="shrink-0 rounded bg-[var(--raised)] px-2 py-0.5 text-xs text-[var(--muted)]">
                   {{ r.type === 'commit' ? 'Commit' : 'Working' }}
                 </div>
               </div>
-              <div v-if="r.commit" class="text-xs text-gray-500 mt-1">
-                Commit: {{ r.commit.substring(0, 7) }}
-                <span v-if="r.commitMsg" class="ml-1 text-gray-400">— {{ r.commitMsg }}</span>
-                <span v-if="r.type === 'commit'" class="ml-2" :class="r.commitExists ? 'text-green-600' : 'text-red-500'">
+              <div v-if="r.commit" class="mt-2 text-xs text-[var(--muted)]">
+                <span class="font-mono">{{ r.commit.substring(0, 7) }}</span>
+                <span v-if="r.commitMsg" class="ml-1">— {{ r.commitMsg }}</span>
+                <span v-if="r.type === 'commit'" class="ml-2" :class="r.commitExists ? 'text-[var(--positive)]' : 'text-[var(--negative)]'">
                   {{ r.commitExists ? '可编辑' : '已丢失' }}
                 </span>
               </div>
-              <div class="text-xs text-gray-500 mt-1">
-                评论数: {{ r.commentCount }}
-                <span v-if="r.updatedAt" class="ml-2">更新于: {{ formatTime(r.updatedAt) }}</span>
+              <div class="mt-2 text-xs tabular-nums text-[var(--muted)]">
+                {{ r.commentCount }} 条评论
+                <span v-if="r.updatedAt" class="ml-2">更新于 {{ formatTime(r.updatedAt) }}</span>
               </div>
-              <div class="mt-3 flex items-center gap-2">
+              <div class="mt-4 flex items-center gap-2">
                 <button
                   v-if="r.type === 'commit' && r.commitExists"
-                  class="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+                  class="control-primary min-h-8 rounded-md px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="saving"
                   @click="onSwitchHistoryReview(r)"
                 >
                   切换并编辑
                 </button>
                 <button
-                  class="px-3 py-1 text-xs rounded border hover:bg-gray-50 dark:hover:bg-gray-800"
+                  class="min-h-8 rounded-md border border-[var(--control)] px-3 text-xs hover:bg-[var(--raised)]"
                   @click="onViewHistoryReview(r)"
                 >
                   查看详情
                 </button>
               </div>
-            </div>
+            </article>
           </div>
         </div>
       </template>
 
-      <!-- Template -->
       <template v-if="activeTab === 'template'">
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
-          <div class="lg:col-span-2 h-full flex flex-col">
-            <div class="mb-2 flex items-center justify-between">
-              <div class="text-sm font-medium">模板内容（存储在 ~/.wtf2pr/export.tpl）</div>
-              <button class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700" @click="onSaveTemplate">保存模板</button>
+        <div class="flex h-full min-h-0 flex-col">
+          <header class="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 class="text-[22px] font-semibold tracking-[-0.02em]">导出模板</h1>
+              <p class="mt-1 text-xs text-[var(--muted)]">使用 Go text/template 决定 Review 报告的结构</p>
             </div>
-            <textarea
-              v-model="templateContent"
-              class="flex-1 w-full border rounded p-3 text-sm font-mono bg-white dark:bg-gray-900"
-              placeholder="输入 Go text/template 模板..."
-            />
+            <button class="control-primary min-h-8 rounded-md px-3 text-xs" :disabled="templateLoading || templateSaving" @click="onSaveTemplate">{{ templateSaving ? '保存中…' : '保存模板' }}</button>
+          </header>
+          <div v-if="templateLoading" class="mb-3 text-xs text-[var(--muted)]" role="status">正在加载模板…</div>
+          <div v-else-if="templateError" class="mb-3 flex items-center gap-2 text-xs text-[var(--negative)]" role="alert">
+            <span>模板加载失败：{{ templateError }}。当前编辑内容已保留。</span>
+            <button type="button" class="underline" @click="loadTemplate">重试</button>
           </div>
-          <div class="lg:col-span-1 h-full overflow-y-auto border rounded-lg p-4 bg-gray-50 dark:bg-gray-800 text-sm">
-            <div class="font-medium mb-2">帮助说明</div>
-            <p class="text-xs text-gray-500 mb-3">系统使用 Go 的 <code>text/template</code> 渲染模板，可用字段如下：</p>
-            <pre v-pre class="text-xs bg-white dark:bg-gray-900 border rounded p-2 overflow-x-auto mb-3">.Type          // "working" 或 "commit"
+          <div class="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+            <div class="flex min-h-0 flex-col">
+              <label for="export-template" class="mb-2 text-xs font-medium text-[var(--muted)]">模板内容 · ~/.wtf2pr/export.tpl</label>
+              <textarea
+                id="export-template"
+                v-model="templateContent"
+                class="min-h-0 w-full flex-1 rounded-lg border border-[var(--control)] bg-[var(--surface)] p-3 text-sm font-mono"
+                placeholder="输入 Go text/template 模板..."
+              />
+            </div>
+            <aside class="min-h-0 overflow-y-auto rounded-lg bg-[var(--raised)] p-4 text-sm" aria-label="模板字段说明">
+              <h2 class="mb-2 font-medium">可用字段</h2>
+              <p class="mb-3 text-xs text-[var(--muted)]">系统使用 Go 的 <code>text/template</code> 渲染模板：</p>
+            <pre v-pre class="text-xs bg-white dark:bg-gray-900 border rounded p-2 overflow-x-auto mb-3">.Type          // "working"、"commit" 或 "branch"
 .CommitInfo    // 可能为 nil
   .Hash
   .Author
@@ -185,6 +156,7 @@ Message: {{.CommitInfo.Message}}
 {{end}}
 {{end}}
 {{end}}</pre>
+            </aside>
           </div>
         </div>
       </template>
@@ -194,7 +166,7 @@ Message: {{.CommitInfo.Message}}
       v-if="showExport"
       :format="exportResult?.format"
       :content="exportResult?.content"
-      @close="showExport = false"
+      @close="closeExportResult"
     />
     <HelpModal v-if="showHelp" @close="showHelp = false" />
     <ReviewResultModal
@@ -204,33 +176,26 @@ Message: {{.CommitInfo.Message}}
       @export="onExportHistoryReview"
     />
 
-    <footer class="shrink-0 border-t bg-white dark:bg-gray-900 px-4 py-2 text-xs text-gray-500 text-center">
-      wtf2pr — code review made simple
-    </footer>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import AppHeader from './components/AppHeader.vue'
-import DiffViewer from './components/DiffViewer.vue'
+import ReviewWorkspace from './components/ReviewWorkspace.vue'
 import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
 import ReviewResultModal from './components/ReviewResultModal.vue'
-import { getDiff, getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getCommits, getConfig, getTemplate, saveTemplate as apiSaveTemplate } from './api/client.js'
+import { getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getConfig, getTemplate, saveTemplate as apiSaveTemplate } from './api/client.js'
 
 const tabs = [
-  { key: 'working', label: 'Working tree' },
-  { key: 'commit', label: 'Commit' },
+  { key: 'review', label: '代码审查' },
   { key: 'history', label: '历史 Review' },
   { key: 'template', label: '导出模板' },
 ]
 
-const activeTab = ref('working')
-const selectedCommitHash = ref('')
-const diffData = ref(null)
-const loading = ref(false)
-const error = ref('')
+const activeTab = ref('review')
+const reviewTarget = ref({ type: 'working', commit: '', base: '' })
 const comments = ref([])
 const exportFormat = ref('markdown')
 const showExport = ref(false)
@@ -238,85 +203,68 @@ const exportResult = ref(null)
 const showHelp = ref(false)
 const saved = ref(true)
 const reviewLabel = ref('')
-
-const commitList = ref([])
-const commitPage = ref(1)
-const commitTotalPages = ref(1)
 const reviewList = ref([])
-
 const historyReviewData = ref(null)
 const templateContent = ref('')
+const templateLoading = ref(false)
+const templateSaving = ref(false)
+const templateError = ref('')
+const templateDirty = ref(false)
+const saving = ref(false)
+const reviewHydrated = ref(false)
+const reviewLoadError = ref('')
+let reviewLoadSerial = 0
+let commentRevision = 0
+let historyDetailSerial = 0
+let templateLoadSerial = 0
+let templateRevision = 0
+let templatePendingLoads = 0
+
+watch(reviewTarget, async target => {
+  const serial = ++reviewLoadSerial
+  const revision = commentRevision
+  reviewHydrated.value = false
+  reviewLoadError.value = ''
+  comments.value = []
+  saved.value = true
+  if (target.type !== 'commit') {
+    reviewHydrated.value = true
+    return
+  }
+  if (!target.commit) return
+  try {
+    const review = await getReview()
+    if (serial !== reviewLoadSerial) return
+    reviewHydrated.value = true
+    if (revision === commentRevision && review.type === 'commit' && review.commit === target.commit) {
+      comments.value = review.comments || []
+    }
+  } catch (e) {
+    if (serial !== reviewLoadSerial) return
+    if (revision === commentRevision) {
+      reviewLoadError.value = e.message
+      reviewHydrated.value = false
+    } else {
+      reviewHydrated.value = true
+    }
+  }
+}, { deep: true })
+
+const canSave = computed(() => activeTab.value === 'review' && reviewTarget.value.type === 'commit' && Boolean(reviewTarget.value.commit) && reviewHydrated.value && !saving.value)
+const canExport = computed(() => {
+  if (activeTab.value !== 'review') return false
+  if (reviewTarget.value.type === 'commit') return reviewHydrated.value && Boolean(reviewTarget.value.commit)
+  if (reviewTarget.value.type === 'branch') return Boolean(reviewTarget.value.base)
+  return true
+})
 
 watch(activeTab, async (tab) => {
-  if (tab === 'working') {
-    comments.value = []
-    diffData.value = null
-    await loadDiff('working')
-  } else if (tab === 'commit') {
-    if (commitList.value.length === 0) {
-      await loadCommits()
-    }
-    if (selectedCommitHash.value) {
-      await loadDiff('commit', selectedCommitHash.value)
-    } else {
-      diffData.value = null
-    }
-    try {
-      const review = await getReview()
-      comments.value = review.comments || []
-    } catch {
-      comments.value = []
-    }
-  } else if (tab === 'history') {
+  if (tab === 'history') {
     await loadReviews()
   } else if (tab === 'template') {
     await loadTemplate()
   }
 })
-
-watch(selectedCommitHash, async (hash) => {
-  if (activeTab.value !== 'commit') return
-  if (!hash) {
-    diffData.value = null
-    return
-  }
-  await loadDiff('commit', hash)
-})
-
-async function loadDiff(type, commit = '') {
-  loading.value = true
-  error.value = ''
-  try {
-    if (type === 'commit' && !commit) {
-      error.value = '请选择一个 Commit'
-      diffData.value = null
-      loading.value = false
-      return
-    }
-    diffData.value = await getDiff(type, commit)
-  } catch (e) {
-    error.value = e.message
-    diffData.value = null
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadCommits() {
-  try {
-    const res = await getCommits(commitPage.value, 10)
-    commitList.value = res.list || []
-    commitPage.value = res.page || 1
-    commitTotalPages.value = res.totalPages || 1
-  } catch {
-    commitList.value = []
-  }
-}
-
-function changeCommitPage(delta) {
-  commitPage.value += delta
-  loadCommits()
-}
 
 async function loadReviews() {
   try {
@@ -326,15 +274,26 @@ async function loadReviews() {
   }
 }
 
+function retryReviewLoad() {
+  reviewTarget.value = { ...reviewTarget.value }
+}
+
 function onCommentsUpdate(list) {
+  if (!reviewHydrated.value) return
+  commentRevision++
   comments.value = list
   saved.value = false
 }
 
 async function createNewReview() {
+  if (saving.value) return
+  saving.value = true
   try {
     const res = await apiNewReview()
+    reviewLoadSerial++
+    commentRevision++
     comments.value = []
+    reviewHydrated.value = true
     saved.value = true
     reviewLabel.value = res.reviewID ? `Review ID: ${res.reviewID}` : ''
     if (activeTab.value === 'history') {
@@ -342,84 +301,148 @@ async function createNewReview() {
     }
   } catch (e) {
     alert('新建 Review 失败: ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
 async function saveReview() {
-  if (activeTab.value !== 'commit') return
+  if (saving.value || !reviewHydrated.value || activeTab.value !== 'review' || reviewTarget.value.type !== 'commit' || !reviewTarget.value.commit) return
+  const target = { ...reviewTarget.value }
+  const revision = commentRevision
+  const loadSerial = reviewLoadSerial
+  const label = reviewLabel.value
+  const snapshot = [...comments.value]
+  saving.value = true
   try {
-    await apiSaveReview(comments.value, 'commit', selectedCommitHash.value)
-    saved.value = true
+    await apiSaveReview(snapshot, 'commit', target.commit)
+    const targetUnchanged = target.type === reviewTarget.value.type && target.commit === reviewTarget.value.commit && target.base === reviewTarget.value.base
+    if (revision === commentRevision && loadSerial === reviewLoadSerial && label === reviewLabel.value && targetUnchanged) {
+      saved.value = true
+    }
   } catch (e) {
     alert('保存失败: ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
+let exportSerial = 0
+
 async function doExport() {
+  if (!canExport.value) return
+  const serial = ++exportSerial
+  const { type, commit, base } = reviewTarget.value
+  const snapshot = type === 'commit' ? [...comments.value] : []
+  const format = exportFormat.value
   try {
-    if (activeTab.value === 'working') {
-      exportResult.value = await exportReview(exportFormat.value, 'working', '')
-    } else if (activeTab.value === 'commit') {
-      exportResult.value = await exportReview(exportFormat.value, 'commit', selectedCommitHash.value)
+    const result = await exportReview(format, type, commit, '', base, snapshot)
+    if (serial === exportSerial) {
+      exportResult.value = result
+      showExport.value = true
     }
-    showExport.value = true
   } catch (e) {
-    alert('导出失败: ' + e.message)
+    if (serial === exportSerial) alert('导出失败: ' + e.message)
   }
 }
 
 async function onSwitchHistoryReview(reviewItem) {
-  if (reviewItem.type !== 'commit' || !reviewItem.commitExists) return
+  if (saving.value || reviewItem.type !== 'commit' || !reviewItem.commitExists) return
+  saving.value = true
   try {
     await apiSwitchReview(reviewItem.reviewID)
-    selectedCommitHash.value = reviewItem.commit || ''
-    activeTab.value = 'commit'
+    reviewTarget.value = { type: 'commit', commit: reviewItem.commit || '', base: '' }
+    activeTab.value = 'review'
     reviewLabel.value = `Review ID: ${reviewItem.reviewID}`
     saved.value = true
   } catch (e) {
     alert('切换 Review 失败: ' + e.message)
+  } finally {
+    saving.value = false
   }
 }
 
 async function onViewHistoryReview(reviewItem) {
+  const serial = ++historyDetailSerial
   try {
     const detail = await getReviewDetail(reviewItem.reviewID)
-    historyReviewData.value = detail
+    if (serial === historyDetailSerial && detail.reviewID === reviewItem.reviewID) {
+      historyReviewData.value = detail
+    }
   } catch (e) {
-    alert('加载 Review 详情失败: ' + e.message)
+    if (serial === historyDetailSerial) alert('加载 Review 详情失败: ' + e.message)
   }
 }
 
+function closeExportResult() {
+  exportSerial++
+  showExport.value = false
+}
+
 function closeReviewResultModal() {
+  historyDetailSerial++
   historyReviewData.value = null
 }
 
 async function onExportHistoryReview(format) {
   if (!historyReviewData.value) return
+  const serial = ++exportSerial
   const d = historyReviewData.value
   try {
-    exportResult.value = await exportReview(format, d.type, d.commit || '', d.reviewID)
-    showExport.value = true
+    const result = await exportReview(format, d.type, d.commit || '', d.reviewID)
+    if (serial === exportSerial) {
+      exportResult.value = result
+      showExport.value = true
+    }
   } catch (e) {
-    alert('导出失败: ' + e.message)
+    if (serial === exportSerial) alert('导出失败: ' + e.message)
   }
 }
 
+let templateApplying = false
+watch(templateContent, () => {
+  if (!templateApplying) {
+    templateRevision++
+    templateDirty.value = true
+  }
+}, { flush: 'sync' })
+
 async function loadTemplate() {
+  const serial = ++templateLoadSerial
+  templatePendingLoads++
+  templateLoading.value = true
+  templateError.value = ''
   try {
     const res = await getTemplate()
-    templateContent.value = res.content || ''
-  } catch {
-    templateContent.value = ''
+    if (serial === templateLoadSerial && !templateDirty.value) {
+      templateApplying = true
+      templateContent.value = res.content || ''
+      templateApplying = false
+    }
+  } catch (e) {
+    if (serial === templateLoadSerial) templateError.value = e.message
+  } finally {
+    templatePendingLoads--
+    if (templatePendingLoads === 0) templateLoading.value = false
   }
 }
 
 async function onSaveTemplate() {
+  if (templateSaving.value) return
+  const snapshot = templateContent.value
+  const revision = templateRevision
+  templateSaving.value = true
   try {
-    await apiSaveTemplate(templateContent.value)
-    alert('模板保存成功')
+    await apiSaveTemplate(snapshot)
+    if (revision === templateRevision && snapshot === templateContent.value) {
+      templateLoadSerial++
+      templateDirty.value = false
+      alert('模板保存成功')
+    }
   } catch (e) {
     alert('模板保存失败: ' + e.message)
+  } finally {
+    templateSaving.value = false
   }
 }
 
@@ -430,24 +453,34 @@ function formatTime(ts) {
 }
 
 onMounted(async () => {
-  await loadDiff('working')
-  try {
-    const review = await getReview()
-    if (review.type === 'commit' && review.commit) {
-      selectedCommitHash.value = review.commit
-    }
-  } catch {
-    // ignore
+  const initialTarget = { ...reviewTarget.value }
+  const initialSerial = reviewLoadSerial
+  const initialRevision = commentRevision
+  let initialReviewApplied = false
+  function initializationIsCurrent() {
+    if (initialReviewApplied) return true
+    return initialSerial === reviewLoadSerial && initialRevision === commentRevision && initialTarget.type === reviewTarget.value.type && initialTarget.commit === reviewTarget.value.commit && initialTarget.base === reviewTarget.value.base
   }
   try {
+    const review = await getReview()
+    if (initializationIsCurrent() && review.type === 'commit' && review.commit) {
+      reviewTarget.value = { type: 'commit', commit: review.commit, base: '' }
+      initialReviewApplied = true
+    }
+  } catch {
+    if (initializationIsCurrent()) reviewTarget.value = { type: 'working', commit: '', base: '' }
+  }
+  const initialConfigLabel = reviewLabel.value
+  try {
     const cfg = await getConfig()
+    if (!initializationIsCurrent() || initialConfigLabel !== reviewLabel.value) return
     if (cfg.reviewID) {
       reviewLabel.value = `Review ID: ${cfg.reviewID}`
     } else if (cfg.reviewFile) {
       reviewLabel.value = cfg.reviewFile === 'review.json' ? 'Review: default' : `Review: ${cfg.reviewFile}`
     }
   } catch {
-    reviewLabel.value = ''
+    if (initializationIsCurrent() && initialConfigLabel === reviewLabel.value) reviewLabel.value = ''
   }
   await loadReviews()
 })

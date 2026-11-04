@@ -1,0 +1,70 @@
+{
+  "review": {
+    "id": "R1-20261104-wtf2pr-review-workspace",
+    "title": "WTF2PR 审查工作区重构 · 第一轮全面评审与修复",
+    "date": "2026-11-04",
+    "machine": "macOS 本地开发机",
+    "method": "6 路 fresh-eyes 全面评审 + 主 agent 综合 + 修复后独立复查",
+    "task": "wtf2pr-review-workspace",
+    "ts": "202611041358",
+    "report_path": "docs/tasks/2026-11-04-review-workspace/review-round-1.html",
+    "projects": ["wtf2pr"],
+    "scopes": [{"repo": "wtf2pr", "base": "008d392（工作区全部变更）", "branch": "feat/review-workspace-redesign", "stat": "前后端实现、测试、文档与自托管字体", "commits": "未提交工作区，无三点提交 diff"}],
+    "out_of_scope": "未授权 commit/push/MR；性能上限和默认监听威胁模型未擅自改变；旧 []Comment 格式统一加载列为存量技术债。",
+    "verdict": "第一轮发现的 Critical/Important 已全部修复并经新的 fresh-eyes 实例复查，无未解决 Critical/Important。默认监听鉴权、全文 diff 重算、大小上限和服务端取消传播留作人类决策。",
+    "verdict_level": "warn"
+  },
+  "summary_rows": [
+    {"cells": ["wtf2pr（6 路全面 + 修复复查）", "18 组已修复", "4 项待决策", "3 项记录", "◐ 修复后通过，进入第二轮"]}
+  ],
+  "confirmations": [
+    {"id": "Q1", "title": "默认监听与 CORS/鉴权", "background": "当前默认 0.0.0.0 且 CORS *，全文接口扩大了网络可读取的数据量。", "options": "建议默认改 127.0.0.1，远程模式显式开启并加 token；是否改变既有默认由人类决定。", "status": "pending"},
+    {"id": "Q2", "title": "全文读取重复计算整份 diff", "background": "每次新旧侧读取会重算 diff，Commit/branch 单次约 4 个 Git 进程，频繁切换会放大。", "options": "建议改为轻量 name-status 授权或同 target 快照复用，working 失效语义需单独评估。", "status": "pending"},
+    {"id": "Q3", "title": "文件与 diff 大小边界", "background": "当前后端和前端均完整读取/渲染文件，超大文件或特殊文件可能消耗大量内存和 DOM。", "options": "建议先限制普通文件并设置明确预览上限，全文复制/下载与预览分开；具体阈值由人类决定。", "status": "pending"},
+    {"id": "Q4", "title": "AbortController 与服务端取消传播", "background": "前端已取消并防旧响应覆盖，但服务端 Git/文件工作仍会继续执行。", "options": "建议把 Request.Context 传到 exec.CommandContext，并评估是否限制并发。", "status": "pending"}
+  ],
+  "findings": [
+    {"id": "1", "level": "critical", "location": "web/src/App.vue", "title": "跨 Commit/历史 Review 评论可能串写", "evidence": "切换目标时评论身份未绑定，保存可写到新 Commit。", "fix": "统一激活 watcher，按目标加载或清空，保存校验 revision、加载序号和 Review 身份。", "status": "fixed"},
+    {"id": "2", "level": "critical", "location": "web/src/App.vue / internal/server/server.go", "title": "保存与导出状态不一致及保存竞态", "evidence": "旧保存响应可覆盖未保存状态，导出未使用当前草稿且跨来源混评论。", "fix": "保存捕获快照与版本；导出传当前评论数组，working/branch 不回退到无关评论。", "status": "fixed"},
+    {"id": "3", "level": "critical", "location": "web/src/App.vue / DiffSourceSelector.vue", "title": "迟到 Review 响应和重复点击可清空草稿", "evidence": "加载成功/失败、慢失败及重复 emit 都可覆盖用户输入。", "fix": "同时校验请求序号与 commentRevision；完整 target 不变时不再 emit。", "status": "fixed"},
+    {"id": "4", "level": "critical", "location": "internal/git/git.go", "title": "同名 branch/tag 导致错误 merge-base 与空 diff", "evidence": "短 ref 在歧义时解析到 tag HEAD。", "fix": "校验、merge-base、diff 全部使用 refs/heads/<base>，补同名 tag 集成测试。", "status": "fixed"},
+    {"id": "5", "level": "critical", "location": "internal/git/git.go / content.go", "title": "Git 选项注入和符号链接目标读取", "evidence": "原始 Commit 可解释为选项；未跟踪链接和根内链接可泄露目标内容。", "fix": "Commit 统一 rev-parse 完整哈希；Lstat/Readlink 返回链接文本，普通文件校验打开身份。", "status": "fixed"},
+    {"id": "6", "level": "critical", "location": "internal/server/server.go", "title": "ReviewID 路径穿越与 stale branch 快照", "evidence": "ID 未净化可逃逸存储目录；branch 导出可复用旧快照。", "fix": "所有 ID 入口只接受规范 UUID；两个 branch 缓存来源都重新计算并加标记回归测试。", "status": "fixed"},
+    {"id": "7", "level": "critical", "location": "web/src/components/FileContentModal.vue", "title": "重命名文件无法查看变更前内容", "evidence": "弹窗统一使用新路径请求旧侧。", "fix": "old 使用 oldFile、new 使用 newFile，新增/删除保留展示路径回退。", "status": "fixed"},
+    {"id": "8", "level": "important", "location": "internal/git/git.go / git_test.go", "title": "main/master 并存默认值及 merge-base 测试空转", "evidence": "master 覆盖 main；旧夹具无法区分 merge-base 与 main 最新提交。", "fix": "首个优先分支命中即停止；精确比较 merge-base，main 修改同文件验证旧侧。", "status": "fixed"},
+    {"id": "9", "level": "important", "location": "internal/git/content.go / server.go", "title": "仓库故障与未知 revision 的 HTTP 状态混淆", "evidence": "chdir/非仓库也可能返回 400。", "fix": "仅有效仓库的未知 revision/ref 返回 400，其余 Git/读取故障返回 500，并拆分测试。", "status": "fixed"},
+    {"id": "10", "level": "important", "location": "internal/server/server.go", "title": "branch 保存和旧 working 兼容性", "evidence": "branch 可无 diff 静默保存；修复初期又误伤省略 type/comments 的旧请求。", "fix": "保存仅 working/commit；空 type 规范 working，省略 comments 保留 Store 回退。", "status": "fixed"},
+    {"id": "11", "level": "important", "location": "web/src/components/DiffViewer.vue / ReviewWorkspace.vue", "title": "文件草稿复用与选择状态重复", "evidence": "切文件保留草稿可写错文件；父子组件重复选择状态。", "fix": "DiffFile 按路径 key 重置；ReviewWorkspace 独占 selectedPath。", "status": "fixed"},
+    {"id": "12", "level": "important", "location": "web/src/App.vue", "title": "模板与历史详情异步乱序", "evidence": "模板加载覆盖编辑、失败清空、历史 A/B 乱序和关闭后重开。", "fix": "模板加载序号、dirty 与同步 watcher；历史详情序号与关闭失效。", "status": "fixed"},
+    {"id": "13", "level": "important", "location": "web/src/components/ReviewResultModal.vue", "title": "历史详情完整文件入口无效", "evidence": "view-full 没有消费者且默认 target 错误。", "fix": "复用 FileContentModal 并传历史 type/commit/base。", "status": "fixed"},
+    {"id": "14", "level": "important", "location": "web/src/components/DiffSourceSelector.vue / ReviewWorkspace.vue", "title": "参数列表加载失败与真空列表混淆", "evidence": "分支失败显示无分支，Commit 失败无重试。", "fix": "分别增加 loading/empty/error/retry，空参数不触发 diff。", "status": "fixed"},
+    {"id": "15", "level": "important", "location": "web/src/components/DiffFile.vue / FileTreeNode.vue / FileExplorer.vue", "title": "长路径挤掉操作与 file→directory 重复 key", "evidence": "窄屏操作被裁；同路径文件和目录共用 key。", "fix": "路径 min-w-0/truncate 与标题换行；key 改为 type:path。", "status": "fixed"},
+    {"id": "16", "level": "important", "location": "web/src/components/ReviewWorkspace.vue / DiffViewer.vue / App.vue", "title": "重复未保存通知和无可达加载状态", "evidence": "dirty 与 update:comments 重复；DiffViewer loading/error 由父组件固定覆盖。", "fix": "仅保留 update:comments；删除不可达分支和 dirty 事件。", "status": "fixed"},
+    {"id": "17", "level": "critical", "location": "前端与 Go 多处", "title": "无消费者接口、字段、参数和样式", "evidence": "getTarget、测试专用分类导出、预留 options、响应 Path/Side 和未使用 token。", "fix": "删除无消费者项；comparison 元数据接入真实分支摘要；测试改经消费者验证。", "status": "fixed"},
+    {"id": "18", "level": "important", "location": "internal/server/server_test.go / web/tests", "title": "测试隔离和关键跨层回归缺口", "evidence": "测试 Review 文件写 cwd 互相污染；分支 API 自比较只断言 200。", "fix": "每用例独立 review 文件；新增真实分叉、stale marker、选项、符号链接和导出内容测试。", "status": "fixed"}
+  ],
+  "suggestions": [
+    {"group": "保持现状/后续记录", "items": [
+      {"id": "S1", "location": "web/src/components/ReviewWorkspace.vue", "text": "默认选中首个文本 diff 是截图后明确的可用性规则，与当前排序后的首个文件不同；文档需明确，不改代码。", "status": "accepted"},
+      {"id": "S2", "location": "web/tests", "text": "SSR helper 有重复，非阻断；浏览器 E2E 已覆盖异步真实行为。", "status": "accepted"},
+      {"id": "S3", "location": "internal/review/store.go / server.go", "text": "旧 []Comment 格式详情/导出解码不统一是基线存量，登记独立兼容任务，不在本特性扩大范围。", "status": "accepted"}
+    ]}
+  ],
+  "decisions": [
+    {"topic": "原生 dialog 与自托管 IBM Plex", "source": "00-feature目标与实施偏差台账", "note": "使用 showModal/cancel/backdrop 统一关闭，字体含 OFL；生产视觉 0 FAIL。"},
+    {"topic": "性能与监听安全", "source": "安全与性能子评审", "note": "Q1-Q4 均保留人类决策，未以性能或安全名义擅自改变默认产品边界。"}
+  ],
+  "strengths": [
+    "真实临时 Git 仓库覆盖同名 tag、merge-base、重命名、符号链接、选项注入和 stale diff，测试不是空转断言。",
+    "前端同时有 AbortController、序号和评论 revision 保护，修复后的异步边界由独立实例复查。",
+    "真实浏览器完成三种来源、39 文件滚动、弹窗、评论、四种导出、历史和模板操作；生产视觉检查 0 FAIL。"
+  ],
+  "verifications": [
+    {"who": "Go 正确性子评审与修复复查", "what": "go test -race ./...、go vet ./...", "result": "PASS"},
+    {"who": "前端子评审与修复复查", "what": "npm test、npm run lint、npm run build", "result": "20 tests PASS；lint/build PASS"},
+    {"who": "主 agent 浏览器 E2E", "what": "隔离 main/feature 仓库真实点击、API 冒烟、评论持久化和生产 embed", "result": "核心场景 PASS；剪贴板权限降级 PASS；物理 Esc 注入环境限制单列"},
+    {"who": "设计验收", "what": "inspect.mjs --app 生产页面 1440/768/390", "result": "0 FAIL；3 个长代码场景 WARN 已记录理由"}
+  ],
+  "notes": "自动化浏览器剪贴板权限受限，仅验证失败降级；macOS 原生键盘截图通道为空，物理 Esc 不冒充 PASS。",
+  "next_steps": ["第二轮全面与简化评审，重点复查修复引入回归、契约兼容和残留死代码。", "全量 lint/build/test 后再进入第三轮冻结确认。"]
+}

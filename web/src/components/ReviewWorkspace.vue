@@ -1,0 +1,145 @@
+<template>
+  <div class="flex h-full min-h-0 flex-col gap-3">
+    <header class="flex shrink-0 flex-wrap items-end justify-between gap-2 px-1">
+      <div>
+        <h1 class="ml-1 text-[22px] leading-7 font-semibold tracking-[-0.02em]">代码审查</h1>
+        <p class="mt-0.5 text-xs text-[var(--muted)]">本地 Git 审查工作区</p>
+      </div>
+      <div class="text-right text-xs text-[var(--muted)]">
+        <div class="font-mono text-[var(--accent)]">{{ scopeSummary }}</div>
+        <div v-if="diffData" class="mt-0.5 tabular-nums">{{ diffData.files.length }} 个变更文件</div>
+        <div v-if="diffData?.comparison" class="mt-0.5">共同祖先 {{ diffData.comparison.mergeBase.slice(0, 8) }}</div>
+      </div>
+    </header>
+
+    <DiffSourceSelector
+      :target="target"
+      :branches="branches"
+      :branch-error="branchError"
+      :branch-loading="branchLoading"
+      @retry-branches="loadBranches"
+      @update:target="$emit('update:target', $event)"
+    />
+
+    <div v-if="target.type === 'commit' && target.commit && !reviewHydrated" class="shrink-0 rounded-lg border bg-white px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-900">
+      <div v-if="reviewLoadError" class="flex items-center gap-2 text-[var(--negative)]" role="alert">
+        <span>评论加载失败：{{ reviewLoadError }}</span>
+        <button type="button" class="underline" @click="$emit('retry-review-load')">重试</button>
+      </div>
+      <div v-else class="text-[var(--muted)]" role="status">正在加载评论，完成后才能编辑、保存或导出…</div>
+    </div>
+
+    <div v-if="loading" class="flex flex-1 items-center justify-center rounded-lg border bg-white text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900" role="status">
+      正在加载变更…
+    </div>
+    <div v-else-if="error" class="flex flex-1 flex-col items-center justify-center gap-3 rounded-lg border bg-white p-6 text-center dark:border-gray-700 dark:bg-gray-900" role="alert">
+      <div class="text-sm text-red-700">{{ error }}</div>
+      <button type="button" class="min-h-8 rounded border px-3 text-sm dark:border-gray-600" @click="loadDiff">重试</button>
+    </div>
+    <div v-else-if="needsCommit" class="flex flex-1 items-center justify-center rounded-lg border bg-white text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900">
+      选择一个 Commit 开始审查
+    </div>
+    <div v-else-if="needsBase" class="flex flex-1 items-center justify-center rounded-lg border bg-white text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-900">
+      选择一个目标本地分支开始对比
+    </div>
+    <DiffViewer
+      v-else
+      :diff-data="diffData"
+      :comments="visibleComments"
+      :readonly="target.type !== 'commit' || !reviewHydrated"
+      :commit-info="diffData?.commitInfo"
+      :target="target"
+      :selected-path="selectedPath"
+      @update:selected-path="selectedPath = $event"
+      @update:comments="$emit('update:comments', $event)"
+    />
+  </div>
+</template>
+
+<script setup>
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import DiffSourceSelector from './DiffSourceSelector.vue'
+import DiffViewer from './DiffViewer.vue'
+import { getBranches, getDiff } from '../api/client.js'
+import { getDefaultFilePath, getFilePath } from '../utils/fileExplorer.js'
+
+const props = defineProps({
+  target: { type: Object, required: true },
+  comments: { type: Array, default: () => [] },
+  reviewHydrated: { type: Boolean, default: true },
+  reviewLoadError: { type: String, default: '' },
+})
+defineEmits(['update:target', 'update:comments', 'retry-review-load'])
+
+const branches = ref(null)
+const branchError = ref('')
+const branchLoading = ref(true)
+const diffData = ref(null)
+const loading = ref(false)
+const error = ref('')
+const selectedPath = ref('')
+let requestSerial = 0
+let controller = null
+
+const needsCommit = computed(() => props.target.type === 'commit' && !props.target.commit)
+const needsBase = computed(() => props.target.type === 'branch' && !props.target.base)
+const visibleComments = computed(() => props.target.type === 'commit' ? props.comments : [])
+const scopeSummary = computed(() => {
+  if (props.target.type === 'working') return 'HEAD → 工作区'
+  if (props.target.type === 'commit') return props.target.commit ? `${props.target.commit.slice(0, 8)}^ → ${props.target.commit.slice(0, 8)}` : '选择 Commit'
+  const comparison = diffData.value?.comparison
+  if (comparison) return `${comparison.base}...${comparison.head}`
+  return props.target.base ? `${props.target.base}...HEAD` : '选择目标分支'
+})
+
+async function loadBranches() {
+  branchLoading.value = true
+  branchError.value = ''
+  try {
+    branches.value = await getBranches()
+  } catch (e) {
+    branchError.value = e.message
+    branches.value = null
+  } finally {
+    branchLoading.value = false
+  }
+}
+
+async function loadDiff() {
+  controller?.abort()
+  const serial = ++requestSerial
+  controller = new AbortController()
+  error.value = ''
+  diffData.value = null
+  if (needsCommit.value || needsBase.value) {
+    loading.value = false
+    selectedPath.value = ''
+    return
+  }
+  loading.value = true
+  try {
+    const target = { ...props.target }
+    const data = await getDiff(target.type, target.commit, target.base, { signal: controller.signal })
+    if (serial !== requestSerial) return
+    diffData.value = data
+    if (!data.files.some(file => getFilePath(file) === selectedPath.value)) {
+      selectedPath.value = getDefaultFilePath(data.files)
+    }
+  } catch (e) {
+    if (serial === requestSerial && e.name !== 'AbortError') {
+      diffData.value = null
+      selectedPath.value = ''
+      error.value = e.message
+    }
+  } finally {
+    if (serial === requestSerial) loading.value = false
+  }
+}
+
+watch(() => props.target, loadDiff, { deep: true })
+onMounted(() => {
+  loadBranches()
+  loadDiff()
+})
+onBeforeUnmount(() => controller?.abort())
+</script>

@@ -99,8 +99,3 @@ func (s *Store) SwitchFile(filePath string) {
 		}
 	}
 }
-
-// Clear 清空评论并删除文件
-func (s *Store) Clear() {
-	s.Save(&models.PersistedReview{Comments: []models.Comment{}})
-}
