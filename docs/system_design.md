@@ -47,7 +47,7 @@
 - **Review 模块**：内存存储 + JSON 文件持久化，线程安全（`sync.RWMutex`）。支持切换存储文件并加载已有评论。新建 Review 只生成 UUID 并切换路径，首次非空保存才创建文件。
 - **Review 并发**：服务端 RWMutex 覆盖 active Review 文件与 Store 的读写及复合快照；前端 mutation 锁防止保存期间新建/切换。
 - **Export 模块**：仅导出包含评论的核心信息，支持 Markdown、JSON、XML 和 Go `text/template` 自定义模板。当前请求使用当前评论快照；省略 comments 的旧 working/commit 请求仅在 Review 类型和 canonical Commit 一致时回退 Store。当前 working/branch 重新计算 diff，有效历史 working/commit 快照可直接导出。
-- **工作目录模块**：`POST /api/config/workdir` 只接受直连 loopback；浏览器请求还需本机 Origin/Host，兼容本地 Vite 不同端口；无 Origin 的本机 CLI 也必须使用合法 loopback Host。绝对路径或仓库子目录经符号链接解析和 `git rev-parse --show-toplevel` 归一为仓库根目录。校验失败保持原目录；成功只更新工作目录，不切换 Review 文件。所有 Git 调用使用加锁快照，切换与 Review 保存/导出等复合操作共用 `reviewMu`，避免跨仓库混用。
+- **工作目录模块**：`POST /api/config/workdir` 支持本地及远程部署访问，不限制客户端 IP、Origin 或 Host。绝对路径或仓库子目录经符号链接解析和 `git rev-parse --show-toplevel` 归一为仓库根目录。校验失败保持原目录；成功只更新工作目录，不切换 Review 文件。所有 Git 调用使用加锁快照，切换与 Review 保存/导出等复合操作共用 `reviewMu`，避免跨仓库混用。
 - **Server 模块**：提供 RESTful API：
   - `GET /api/diff`、`GET /api/commits`、`GET /api/branches`、`GET /api/file/content`
   - `GET /api/config`、`POST /api/config/workdir`

@@ -89,7 +89,7 @@ npm run build
 - canonical Commit 保存、自定义模板保存与读取。
 - 40 组 `/review/new` 与 `/api/config` 并发请求，供 race detector 检查 active Review 路径。
 - 工作目录切换：A/B 仓库 config/diff/commits/branches/file content 来源与 Review 保留；子目录归一；空、相对、普通文件、不存在和非仓库路径不改变旧目录。
-- 工作目录安全与并发：伪造 forwarded 地址、恶意 Origin/Host 拒绝，本地 Vite 来源允许；30 组切换、diff 和分支并发由 race detector 检查。
+- 工作目录远程部署与并发：非 loopback 客户端及部署 Origin/Host 可切换仓库；30 组切换、diff 和分支并发由 race detector 检查。
 
 ## `web/tests`
 

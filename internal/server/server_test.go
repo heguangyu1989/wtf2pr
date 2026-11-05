@@ -1013,7 +1013,7 @@ func TestSwitchWorkdir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dirB, "nested"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	w := workdirRequest(t, srv, filepath.Join(dirB, "nested"), "127.0.0.1:1234", "http://localhost:8323", "localhost:8322")
+	w := workdirRequest(t, srv, filepath.Join(dirB, "nested"), "203.0.113.10:1234", "https://review.example.com", "review.example.com")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected workdir switch 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1072,13 +1072,12 @@ func workdirRequest(t *testing.T, srv *Server, workDir, remoteAddr, origin, host
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = remoteAddr
 	req.Header.Set("Origin", origin)
-	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	req.Host = host
 	srv.engine.ServeHTTP(w, req)
 	return w
 }
 
-func TestSwitchWorkdirRejectsInvalidAndRemote(t *testing.T) {
+func TestSwitchWorkdirRejectsInvalid(t *testing.T) {
 	tests := []struct {
 		name    string
 		workDir func(*testing.T) string
@@ -1106,31 +1105,6 @@ func TestSwitchWorkdirRejectsInvalidAndRemote(t *testing.T) {
 			}
 			if got := srv.currentWorkDir(); got != before {
 				t.Errorf("invalid request changed workdir from %q to %q", before, got)
-			}
-		})
-	}
-
-	srv, _ := setupTestServer(t)
-	before := srv.currentWorkDir()
-	dirB := initTestRepo(t)
-	for _, tc := range []struct {
-		name       string
-		remoteAddr string
-		origin     string
-		host       string
-	}{
-		{name: "remote with spoofed forwarding header", remoteAddr: "203.0.113.1:1234", host: "127.0.0.1:8322"},
-		{name: "cross-site origin", remoteAddr: "127.0.0.1:1234", origin: "https://evil.example", host: "127.0.0.1:8322"},
-		{name: "untrusted host", remoteAddr: "127.0.0.1:1234", origin: "http://127.0.0.1:8322", host: "evil.example"},
-		{name: "untrusted host without origin", remoteAddr: "127.0.0.1:1234", host: "evil.example"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := workdirRequest(t, srv, dirB, tc.remoteAddr, tc.origin, tc.host)
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("expected forbidden workdir switch 403, got %d: %s", w.Code, w.Body.String())
-			}
-			if got := srv.currentWorkDir(); got != before {
-				t.Fatalf("forbidden request changed workdir to %q", got)
 			}
 		})
 	}
