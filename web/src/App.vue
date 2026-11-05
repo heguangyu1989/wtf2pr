@@ -37,6 +37,10 @@
           :comments="comments"
           :review-hydrated="reviewHydrated"
           :review-load-error="reviewLoadError"
+          :work-dir="currentWorkdir"
+          :workdir-changing="workdirChanging"
+          :workdir-error="workdirError"
+          @switch-workdir="onSwitchWorkdir"
           @retry-review-load="retryReviewLoad"
           @update:comments="onCommentsUpdate"
         />
@@ -180,13 +184,13 @@ Message: {{.CommitInfo.Message}}
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted, nextTick } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import ReviewWorkspace from './components/ReviewWorkspace.vue'
 import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
 import ReviewResultModal from './components/ReviewResultModal.vue'
-import { getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getConfig, getTemplate, saveTemplate as apiSaveTemplate } from './api/client.js'
+import { getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getConfig, getTemplate, saveTemplate as apiSaveTemplate, switchWorkdir as apiSwitchWorkdir } from './api/client.js'
 
 const tabs = [
   { key: 'review', label: '代码审查' },
@@ -213,6 +217,9 @@ const templateDirty = ref(false)
 const saving = ref(false)
 const reviewHydrated = ref(false)
 const reviewLoadError = ref('')
+const currentWorkdir = ref('')
+const workdirChanging = ref(false)
+const workdirError = ref('')
 let reviewLoadSerial = 0
 let commentRevision = 0
 let historyDetailSerial = 0
@@ -250,9 +257,9 @@ watch(reviewTarget, async target => {
   }
 }, { deep: true })
 
-const canSave = computed(() => activeTab.value === 'review' && reviewTarget.value.type === 'commit' && Boolean(reviewTarget.value.commit) && reviewHydrated.value && !saving.value)
+const canSave = computed(() => activeTab.value === 'review' && !workdirChanging.value && reviewTarget.value.type === 'commit' && Boolean(reviewTarget.value.commit) && reviewHydrated.value && !saving.value)
 const canExport = computed(() => {
-  if (activeTab.value !== 'review') return false
+  if (activeTab.value !== 'review' || workdirChanging.value) return false
   if (reviewTarget.value.type === 'commit') return reviewHydrated.value && Boolean(reviewTarget.value.commit)
   if (reviewTarget.value.type === 'branch') return Boolean(reviewTarget.value.base)
   return true
@@ -283,6 +290,30 @@ function onCommentsUpdate(list) {
   commentRevision++
   comments.value = list
   saved.value = false
+}
+
+async function onSwitchWorkdir(workDir) {
+  if (workdirChanging.value || saving.value) return
+  workdirChanging.value = true
+  workdirError.value = ''
+  exportSerial++
+  showExport.value = false
+  exportResult.value = null
+  try {
+    const result = await apiSwitchWorkdir(workDir)
+    reviewLoadSerial++
+    commentRevision++
+    comments.value = []
+    reviewTarget.value = { type: 'working', commit: '', base: '' }
+    reviewHydrated.value = true
+    reviewLoadError.value = ''
+    saved.value = true
+    currentWorkdir.value = result.workDir
+  } catch (e) {
+    workdirError.value = e.message
+  } finally {
+    workdirChanging.value = false
+  }
 }
 
 async function createNewReview() {
@@ -470,17 +501,24 @@ onMounted(async () => {
   } catch {
     if (initializationIsCurrent()) reviewTarget.value = { type: 'working', commit: '', base: '' }
   }
+  await nextTick()
   const initialConfigLabel = reviewLabel.value
+  const configSerial = reviewLoadSerial
+  const configRevision = commentRevision
+  function configIsCurrent() {
+    return configSerial === reviewLoadSerial && configRevision === commentRevision
+  }
   try {
     const cfg = await getConfig()
-    if (!initializationIsCurrent() || initialConfigLabel !== reviewLabel.value) return
+    if (!configIsCurrent() || initialConfigLabel !== reviewLabel.value) return
+    currentWorkdir.value = cfg.workDir || ''
     if (cfg.reviewID) {
       reviewLabel.value = `Review ID: ${cfg.reviewID}`
     } else if (cfg.reviewFile) {
       reviewLabel.value = cfg.reviewFile === 'review.json' ? 'Review: default' : `Review: ${cfg.reviewFile}`
     }
   } catch {
-    if (initializationIsCurrent() && initialConfigLabel === reviewLabel.value) reviewLabel.value = ''
+    if (configIsCurrent() && initialConfigLabel === reviewLabel.value) reviewLabel.value = ''
   }
   await loadReviews()
 })

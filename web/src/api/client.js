@@ -43,6 +43,17 @@ export function getConfig() {
   return request('/config')
 }
 
+export async function switchWorkdir(workDir) {
+  const data = await request('/config/workdir', {
+    method: 'POST',
+    body: JSON.stringify({ workDir }),
+  })
+  if (typeof data?.workDir !== 'string' || !data.workDir.trim()) {
+    throw new Error('invalid workdir response')
+  }
+  return data
+}
+
 export function getReview() {
   return request('/review')
 }

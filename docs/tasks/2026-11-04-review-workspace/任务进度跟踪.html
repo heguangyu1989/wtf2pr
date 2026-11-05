@@ -29,12 +29,12 @@
 <body>
 <main>
   <header>
-    <span class="badge">编码与验证完成 · 未提交交付</span>
+    <span class="badge">编码与验证完成 · 本地提交交付</span>
     <h1>代码审查工作区重构</h1>
-    <p class="muted">分支 <code>feat/review-workspace-redesign</code> · 更新于 2026-11-04 16:08 · 未 commit、未 push</p>
+    <p class="muted">分支 <code>feat/review-workspace-redesign</code> · 更新于 2026-11-05 10:55 · 已本地 commit、未 push</p>
   </header>
   <div class="grid">
-    <div class="metric"><span class="muted">已完成评审</span><strong>3 + 目录专项</strong></div>
+    <div class="metric"><span class="muted">已完成评审</span><strong>3 + 2 专项</strong></div>
     <div class="metric"><span class="muted">未解决 Critical</span><strong>0</strong></div>
     <div class="metric"><span class="muted">未解决 Important</span><strong>0</strong></div>
     <div class="metric"><span class="muted">最终浏览器回归</span><strong>PASS</strong></div>
@@ -51,15 +51,18 @@
       <li class="done">第二轮全面/简化评审与 12 组修复</li>
       <li class="done">第三轮冻结评审与 12 组修复、最终浏览器关键路径回归</li>
       <li class="done">目录专项：目录名选中筛选、独立折叠/展开、全部文件恢复、平铺与右侧 diff 联动</li>
+      <li class="done">工作目录专项：绝对路径/子目录切换、Git 根目录归一、本机来源校验、全 Git 数据刷新、Review 文件保留及初始化/草稿/导出竞态修复</li>
     </ol>
   </section>
   <section>
     <h2>实跑验证</h2>
     <ul>
       <li><code>go test -race ./...</code>、<code>go vet ./...</code>、<code>go build ./cmd/wtf2pr</code>：PASS。</li>
-      <li><code>npm test</code>：21/21 PASS；<code>npm run lint</code>、<code>npm run build</code>：PASS。</li>
-      <li>测试统计：88 个顶层 Go 测试函数 + 21 个 Node 测试。</li>
+      <li><code>npm test</code>：33/33 PASS；<code>npm run lint</code>、<code>npm run build</code>：PASS。</li>
+      <li>测试统计：91 个顶层 Go 测试函数 + 33 个 Node 测试；新增 7 个真实 Vue 内存渲染行为测试。</li>
       <li>最终生产浏览器：working/branch/commit、来源恢复、水合、完整文件新旧侧与评论保存均 PASS。</li>
+      <li>工作目录 A/B 仓库：子目录归一、三种 diff、目录筛选、Review 评论恢复、非法路径保持、恶意 Origin/Host 403 均 PASS。</li>
+      <li>受控慢配置：旧初始化响应不能覆盖新仓库；未提交草稿不被覆盖；成功后显示规范仓库根目录。</li>
       <li>生产视觉检查 1440/768/390：0 FAIL；长代码场景的 WARN 已记录理由。</li>
     </ul>
   </section>
@@ -68,6 +71,7 @@
     <ul>
       <li>自动化剪贴板权限受限：仅确认“复制失败，请手动选择”降级有效。</li>
       <li>macOS 原生键盘截图通道为空：物理 Esc 未验证；原生 cancel、按钮和遮罩关闭已实点通过。</li>
+      <li>无法确认归属的既有 18327 服务未停止；本次创建的验证服务与临时产物均已清理。</li>
     </ul>
   </section>
   <section>
@@ -80,18 +84,19 @@
     </ul>
   </section>
   <section>
-    <h2>三轮评审报告</h2>
+    <h2>评审报告</h2>
     <ul>
       <li><a href="review-round-1.html">第一轮报告</a> · <a href="review-round-1.json">JSON</a></li>
       <li><a href="review-round-2.html">第二轮报告</a> · <a href="review-round-2.json">JSON</a></li>
       <li><a href="review-round-3.html">第三轮冻结报告</a> · <a href="review-round-3.json">JSON</a></li>
       <li><a href="review-directory-selection.html">目录选中专项报告</a> · <a href="review-directory-selection.json">JSON</a></li>
+      <li><a href="review-workdir-switching.html">工作目录专项报告</a> · <a href="review-workdir-switching.json">JSON</a>（终审无 Critical/Important）</li>
     </ul>
   </section>
   <section>
     <h2>交付边界</h2>
     <p>最终 CI 等效检查全部通过：<code>make lint</code>、前端测试/build、Go race/vet/build。临时脚本、E2E 仓库、截图与二进制已清理。</p>
-    <p>上线顺序：先构建前端并执行 <code>make embed</code>，再编译 Go 单二进制。回滚边界：恢复对应源码、静态资源和 Review 存储实现；本变更未 commit、未 push、不创建 MR。</p>
+    <p>上线顺序：先构建前端并执行 <code>make embed</code>，再编译 Go 单二进制。回滚边界：恢复对应源码、静态资源和 Review 存储实现；本变更已本地 commit、未 push、不创建 MR。</p>
   </section>
 </main>
 </body>

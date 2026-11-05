@@ -214,6 +214,16 @@ type ExportResponse struct {
 	Content string       `json:"content"`
 }
 
+// WorkdirRequest 工作目录切换请求
+type WorkdirRequest struct {
+	WorkDir string `json:"workDir" binding:"required"`
+}
+
+// WorkdirResponse 工作目录切换响应
+type WorkdirResponse struct {
+	WorkDir string `json:"workDir"`
+}
+
 // APIResponse 通用 API 响应包装
 type APIResponse struct {
 	Code    int         `json:"code"`

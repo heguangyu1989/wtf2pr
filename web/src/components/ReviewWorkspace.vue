@@ -12,7 +12,15 @@
       </div>
     </header>
 
+    <WorkdirSwitcher
+      :work-dir="workDir"
+      :changing="workdirChanging"
+      :error="workdirError"
+      @switch="$emit('switch-workdir', $event)"
+    />
+
     <DiffSourceSelector
+      :key="workDir"
       :target="target"
       :branches="branches"
       :branch-error="branchError"
@@ -60,6 +68,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DiffSourceSelector from './DiffSourceSelector.vue'
 import DiffViewer from './DiffViewer.vue'
+import WorkdirSwitcher from './WorkdirSwitcher.vue'
 import { getBranches, getDiff } from '../api/client.js'
 import { getDefaultFilePath, getFilePath } from '../utils/fileExplorer.js'
 
@@ -68,8 +77,11 @@ const props = defineProps({
   comments: { type: Array, default: () => [] },
   reviewHydrated: { type: Boolean, default: true },
   reviewLoadError: { type: String, default: '' },
+  workDir: { type: String, default: '' },
+  workdirChanging: { type: Boolean, default: false },
+  workdirError: { type: String, default: '' },
 })
-defineEmits(['update:target', 'update:comments', 'retry-review-load'])
+defineEmits(['update:target', 'update:comments', 'retry-review-load', 'switch-workdir'])
 
 const branches = ref(null)
 const branchError = ref('')
@@ -92,16 +104,23 @@ const scopeSummary = computed(() => {
   return props.target.base ? `${props.target.base}...HEAD` : '选择目标分支'
 })
 
+let branchRequestSerial = 0
+
 async function loadBranches() {
+  const serial = ++branchRequestSerial
   branchLoading.value = true
   branchError.value = ''
+  branches.value = null
   try {
-    branches.value = await getBranches()
+    const data = await getBranches()
+    if (serial === branchRequestSerial) branches.value = data
   } catch (e) {
-    branchError.value = e.message
-    branches.value = null
+    if (serial === branchRequestSerial) {
+      branchError.value = e.message
+      branches.value = null
+    }
   } finally {
-    branchLoading.value = false
+    if (serial === branchRequestSerial) branchLoading.value = false
   }
 }
 
@@ -137,6 +156,11 @@ async function loadDiff() {
 }
 
 watch(() => props.target, loadDiff, { deep: true })
+watch(() => props.workDir, () => {
+  selectedPath.value = ''
+  loadBranches()
+  loadDiff()
+})
 onMounted(() => {
   loadBranches()
   loadDiff()
