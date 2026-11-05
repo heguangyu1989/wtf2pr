@@ -25,6 +25,7 @@
 ### 1. 前端
 
 - **统一审查工作区**：使用「代码审查 / 历史 Review / 导出模板」主导航，来源选择器支持未提交、指定 Commit、当前分支到目标本地分支。
+- **工作目录切换**：输入本机 Git 仓库绝对路径或子目录，成功后回到未提交视图并重新加载来源选择、分支与 diff；保留目录树/平铺/排序能力及 Review 文件。初始化配置、目标切换和导出均有世代保护，用户未提交草稿不被旧配置覆盖，成功响应统一显示规范化仓库根目录。
 - **Diff 展示**：全宽双栏布局，左侧文件栏、右侧代码 Diff，支持新增/删除/上下文行、双行号、Commit 与 merge-base 元数据。
 - **文件浏览器**：支持目录树/平铺、目录名选中筛选、目录展开折叠、连续滚动，不再按文件分页。目录名与箭头分别处理筛选和折叠，平铺使用同一过滤结果。内置路径、类型、测试优先、文档优先和反向排序，视图及排序偏好保存在浏览器本地。
 - **完整文件弹窗**：原生 `<dialog>` 展示 old/new 完整文件，支持行号、复制及失败降级、Esc 和遮罩关闭；重命名按侧选择真实路径，新增/删除缺失侧有明确状态。
@@ -46,9 +47,11 @@
 - **Review 模块**：内存存储 + JSON 文件持久化，线程安全（`sync.RWMutex`）。支持切换存储文件并加载已有评论。新建 Review 只生成 UUID 并切换路径，首次非空保存才创建文件。
 - **Review 并发**：服务端 RWMutex 覆盖 active Review 文件与 Store 的读写及复合快照；前端 mutation 锁防止保存期间新建/切换。
 - **Export 模块**：仅导出包含评论的核心信息，支持 Markdown、JSON、XML 和 Go `text/template` 自定义模板。当前请求使用当前评论快照；省略 comments 的旧 working/commit 请求仅在 Review 类型和 canonical Commit 一致时回退 Store。当前 working/branch 重新计算 diff，有效历史 working/commit 快照可直接导出。
+- **工作目录模块**：`POST /api/config/workdir` 只接受直连 loopback；浏览器请求还需本机 Origin/Host，兼容本地 Vite 不同端口；无 Origin 的本机 CLI 也必须使用合法 loopback Host。绝对路径或仓库子目录经符号链接解析和 `git rev-parse --show-toplevel` 归一为仓库根目录。校验失败保持原目录；成功只更新工作目录，不切换 Review 文件。所有 Git 调用使用加锁快照，切换与 Review 保存/导出等复合操作共用 `reviewMu`，避免跨仓库混用。
 - **Server 模块**：提供 RESTful API：
   - `GET /api/diff`、`GET /api/commits`、`GET /api/branches`、`GET /api/file/content`
-  - `GET /api/config`、`GET /api/review`、`GET /api/reviews`、`GET /api/review/detail`
+  - `GET /api/config`、`POST /api/config/workdir`
+  - `GET /api/review`、`GET /api/reviews`、`GET /api/review/detail`
   - `POST /api/review`、`POST /api/review/new`、`POST /api/review/switch`
   - `POST /api/export`、`GET/POST /api/template`
   - 静态文件服务通过 `NoRoute` 兜底，将未匹配路由指向 embed 的前端资源。
@@ -66,7 +69,7 @@
 
 - 后端单元与集成测试覆盖 Diff 解析、raw 路径身份、分支与 merge-base、完整文件新旧侧、路径安全、Review 存储、导出和 Server API。
 - 前端 Node 原生测试覆盖文件树/排序、API 参数、Vue SSR 组件契约；真实浏览器验证三种来源、异步水合、评论、导出、历史和模板。
-- 当前实测为 **88 个顶层 Go 测试函数 + 21 个 Node 测试**，测试清单详见 `docs/unit_tests.md`。
+- 当前实测为 **91 个顶层 Go 测试函数 + 33 个 Node 测试**，测试清单详见 `docs/unit_tests.md`。
 
 ## AI 开发守则
 > 当 AI 依据本文档进行功能开发时，必须遵守以下规则：

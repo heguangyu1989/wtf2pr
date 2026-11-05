@@ -14,6 +14,7 @@
   - 尚未被 Git 跟踪的新文件（untracked）
 - **Commit Review**：输入任意 Commit Hash，查看该 Commit 的完整 Diff 与 Commit 信息。
 - **Branch Review**：选择目标本地分支，按 `目标分支...HEAD` 查看当前分支自共同祖先以来的提交变更，不包含未提交修改。
+- **工作目录切换**：在审查页输入本机 Git 仓库的绝对路径或其中子目录，切换后刷新 Commit、分支、diff 与完整文件数据；非法路径不会改变当前仓库，Review 文件保持不变。
 - **文件浏览器**：支持目录树/平铺、目录名选中筛选、折叠/展开、连续滚动、路径/类型/测试/文档排序、反向排序和浏览器偏好保存，不再按文件分页。
 - **完整文件**：通过原生弹窗查看变更前/后的完整文件，支持行号、复制、Esc 和遮罩关闭，覆盖新增、删除、重命名、空文件和二进制文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见（指定 Commit 模式）。
@@ -124,6 +125,7 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 - `GET /api/diff?type=commit&commit=<hash>` — 获取指定 Commit 的 Diff
 - `GET /api/diff?type=branch&base=<branch>` — 获取当前分支到目标本地分支的三点 Diff
 - `GET /api/branches` — 获取当前分支、本地分支列表与默认目标分支
+- `POST /api/config/workdir` — 切换本机 Git 工作目录；仅接受直连 loopback 与可信本机页面来源，请求体为 `{ "workDir": "/absolute/repo" }`
 - `GET /api/file/content?type=<type>&path=<path>&side=old|new&commit=<hash>&base=<branch>` — 读取变更前/后的完整文件（路径需属于对应 diff）
 - `GET /api/review` — 获取当前 Review 数据
 - `POST /api/review` — 保存 Review 数据

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,6 +32,7 @@ type Server struct {
 	reviewFile string
 	staticFS   fs.FS
 	reviewMu   sync.RWMutex
+	workDirMu  sync.RWMutex
 }
 
 // NewServer 创建 server
@@ -49,6 +53,18 @@ func NewServer(workDir string, staticFS fs.FS, reviewFile string) *Server {
 	return s
 }
 
+func (s *Server) currentWorkDir() string {
+	s.workDirMu.RLock()
+	defer s.workDirMu.RUnlock()
+	return s.workDir
+}
+
+func (s *Server) setWorkDir(workDir string) {
+	s.workDirMu.Lock()
+	defer s.workDirMu.Unlock()
+	s.workDir = workDir
+}
+
 func (s *Server) setupRoutes() {
 	api := s.engine.Group("/api")
 	{
@@ -57,6 +73,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/branches", s.handleGetBranches)
 		api.GET("/file/content", s.handleGetFileContent)
 		api.GET("/config", s.handleGetConfig)
+		api.POST("/config/workdir", s.handleSwitchWorkdir)
 		api.GET("/review", s.handleGetReview)
 		api.GET("/review/detail", s.handleGetReviewDetail)
 		api.GET("/reviews", s.handleGetReviews)
@@ -107,7 +124,69 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: map[string]string{
 		"reviewFile": reviewFileName,
 		"reviewID":   reviewID,
+		"workDir":    s.currentWorkDir(),
 	}})
+}
+
+func isLoopbackHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
+	}
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
+}
+
+func allowWorkdirRequest(r *http.Request) bool {
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || !net.ParseIP(remoteIP).IsLoopback() {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return isLoopbackHost(r.Host)
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || !isLoopbackHost(u.Host) {
+		return false
+	}
+	return isLoopbackHost(r.Host)
+}
+
+func (s *Server) handleSwitchWorkdir(c *gin.Context) {
+	if !allowWorkdirRequest(c.Request) {
+		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "workdir switch is only allowed from localhost"})
+		return
+	}
+	var req models.WorkdirRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	workDir := filepath.Clean(strings.TrimSpace(req.WorkDir))
+	if !filepath.IsAbs(workDir) {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "workDir must be an absolute path"})
+		return
+	}
+	info, err := os.Stat(workDir)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "workDir is not a directory"})
+		return
+	}
+	if evaluated, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = evaluated
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "workDir is not a git repository"})
+		return
+	}
+	root := strings.TrimSpace(string(out))
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	s.setWorkDir(root)
+	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: models.WorkdirResponse{WorkDir: root}})
 }
 
 func (s *Server) handleGetCommits(c *gin.Context) {
@@ -122,7 +201,7 @@ func (s *Server) handleGetCommits(c *gin.Context) {
 	if req.PageSize < 1 {
 		req.PageSize = 10
 	}
-	resp, err := git.GetCommits(s.workDir, req)
+	resp, err := git.GetCommits(s.currentWorkDir(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -131,7 +210,7 @@ func (s *Server) handleGetCommits(c *gin.Context) {
 }
 
 func (s *Server) handleGetBranches(c *gin.Context) {
-	branches, err := git.GetBranches(s.workDir)
+	branches, err := git.GetBranches(s.currentWorkDir())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -164,7 +243,7 @@ func (s *Server) handleGetDiff(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: "unsupported diff type"})
 		return
 	}
-	diff, err := git.GetDiff(s.workDir, req)
+	diff, err := git.GetDiff(s.currentWorkDir(), req)
 	if err != nil {
 		writeGitError(c, err)
 		return
@@ -178,7 +257,7 @@ func (s *Server) handleGetFileContent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
 		return
 	}
-	content, err := git.GetFileContent(s.workDir, req)
+	content, err := git.GetFileContent(s.currentWorkDir(), req)
 	if err != nil {
 		writeGitError(c, err)
 		return
@@ -222,7 +301,7 @@ func (s *Server) handleGetReviewDetail(c *gin.Context) {
 		pr.Type = string(models.DiffTypeWorking)
 	}
 	if pr.Type == string(models.DiffTypeCommit) && pr.Commit != "" {
-		pr.CommitExists = git.CommitExists(s.workDir, pr.Commit)
+		pr.CommitExists = git.CommitExists(s.currentWorkDir(), pr.Commit)
 	}
 	c.JSON(http.StatusOK, models.APIResponse{Code: 0, Message: "ok", Data: pr})
 }
@@ -247,7 +326,7 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 		return
 	}
 	if req.Type == models.DiffTypeCommit {
-		resolvedCommit, err := git.ResolveCommit(s.workDir, req.Commit)
+		resolvedCommit, err := git.ResolveCommit(s.currentWorkDir(), req.Commit)
 		if err != nil {
 			writeGitError(c, err)
 			return
@@ -280,7 +359,7 @@ func (s *Server) handleSaveReview(c *gin.Context) {
 
 	// 获取当前 diff 上下文并一起保存
 	var diffData *models.DiffResponse
-	diff, err := git.GetDiff(s.workDir, models.DiffRequest{Type: req.Type, Commit: req.Commit})
+	diff, err := git.GetDiff(s.currentWorkDir(), models.DiffRequest{Type: req.Type, Commit: req.Commit})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.APIResponse{Code: 500, Message: err.Error()})
 		return
@@ -342,7 +421,7 @@ func (s *Server) handleGetReviews(c *gin.Context) {
 							item.CommitMsg = pr.Diff.CommitInfo.Message
 						}
 						if item.Type == string(models.DiffTypeCommit) && item.Commit != "" {
-							item.CommitExists = git.CommitExists(s.workDir, item.Commit)
+							item.CommitExists = git.CommitExists(s.currentWorkDir(), item.Commit)
 						}
 					} else {
 						// old format: []Comment
@@ -442,7 +521,7 @@ func (s *Server) handleExport(c *gin.Context) {
 	}
 
 	if req.Type == models.DiffTypeCommit && diff == nil {
-		resolvedCommit, err := git.ResolveCommit(s.workDir, req.Commit)
+		resolvedCommit, err := git.ResolveCommit(s.currentWorkDir(), req.Commit)
 		if err != nil {
 			writeGitError(c, err)
 			return
@@ -455,7 +534,7 @@ func (s *Server) handleExport(c *gin.Context) {
 			diff = persisted.Diff
 		} else {
 			diffReq := models.DiffRequest{Type: req.Type, Commit: req.Commit, Base: req.Base}
-			got, err := git.GetDiff(s.workDir, diffReq)
+			got, err := git.GetDiff(s.currentWorkDir(), diffReq)
 			if err != nil {
 				writeGitError(c, err)
 				return

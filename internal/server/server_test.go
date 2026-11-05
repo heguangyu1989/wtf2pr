@@ -988,3 +988,190 @@ func TestCustomReviewIDCompatibility(t *testing.T) {
 		t.Fatalf("expected custom id export 200 with comments, got %d: %s", w3.Code, w3.Body.String())
 	}
 }
+
+func TestSwitchWorkdir(t *testing.T) {
+	srv, dirA := setupTestServer(t)
+	reviewFile := srv.reviewFile
+	srv.store.Save(&models.PersistedReview{Type: "working", Comments: []models.Comment{{ID: "keep", FilePath: "a.txt", Content: "keep-review"}}})
+	dirB := initTestRepo(t)
+	if err := os.WriteFile(filepath.Join(dirA, "a.txt"), []byte("from-a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "only-b.txt"), []byte("from-b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "b-committed.txt"), []byte("committed in B\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "b-committed.txt"}, {"commit", "-m", "only-b-commit"}, {"branch", "only-b-branch"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dirB
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dirB, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	w := workdirRequest(t, srv, filepath.Join(dirB, "nested"), "127.0.0.1:1234", "http://localhost:8323", "localhost:8322")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected workdir switch 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp models.APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	canonicalB, err := filepath.EvalSymlinks(dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || data["workDir"] != canonicalB {
+		t.Fatalf("unexpected workdir response: %#v", resp.Data)
+	}
+	if srv.reviewFile != reviewFile {
+		t.Fatalf("workdir switch changed review file to %q", srv.reviewFile)
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "config", path: "/api/config", want: `"workDir":"` + canonicalB + `"`},
+		{name: "diff", path: "/api/diff?type=working", want: "only-b.txt"},
+		{name: "commits", path: "/api/commits?page=1&page_size=10", want: "only-b-commit"},
+		{name: "branches", path: "/api/branches", want: "only-b-branch"},
+		{name: "file content", path: "/api/file/content?type=working&path=only-b.txt&side=new", want: "from-b"},
+		{name: "review", path: "/api/review", want: "keep-review"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", tc.path, nil)
+			srv.engine.ServeHTTP(w, req)
+			if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(tc.want)) {
+				t.Fatalf("expected %q in %s response, got %d: %s", tc.want, tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+	w = httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/diff?type=working", nil)
+	srv.engine.ServeHTTP(w, req)
+	if bytes.Contains(w.Body.Bytes(), []byte("from-a")) {
+		t.Fatalf("repository A content leaked into B diff: %s", w.Body.String())
+	}
+}
+
+func workdirRequest(t *testing.T, srv *Server, workDir, remoteAddr, origin, host string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(models.WorkdirRequest{WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/config/workdir", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Origin", origin)
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	req.Host = host
+	srv.engine.ServeHTTP(w, req)
+	return w
+}
+
+func TestSwitchWorkdirRejectsInvalidAndRemote(t *testing.T) {
+	tests := []struct {
+		name    string
+		workDir func(*testing.T) string
+	}{
+		{name: "empty", workDir: func(*testing.T) string { return "" }},
+		{name: "blank", workDir: func(*testing.T) string { return "  " }},
+		{name: "relative", workDir: func(*testing.T) string { return "relative/repo" }},
+		{name: "file", workDir: func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "file.txt")
+			if err := os.WriteFile(path, []byte("not a directory"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+		{name: "missing", workDir: func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
+		{name: "not a repository", workDir: func(t *testing.T) string { return t.TempDir() }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := setupTestServer(t)
+			before := srv.currentWorkDir()
+			w := workdirRequest(t, srv, tc.workDir(t), "127.0.0.1:1234", "", "127.0.0.1:8322")
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected invalid workdir 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if got := srv.currentWorkDir(); got != before {
+				t.Errorf("invalid request changed workdir from %q to %q", before, got)
+			}
+		})
+	}
+
+	srv, _ := setupTestServer(t)
+	before := srv.currentWorkDir()
+	dirB := initTestRepo(t)
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		origin     string
+		host       string
+	}{
+		{name: "remote with spoofed forwarding header", remoteAddr: "203.0.113.1:1234", host: "127.0.0.1:8322"},
+		{name: "cross-site origin", remoteAddr: "127.0.0.1:1234", origin: "https://evil.example", host: "127.0.0.1:8322"},
+		{name: "untrusted host", remoteAddr: "127.0.0.1:1234", origin: "http://127.0.0.1:8322", host: "evil.example"},
+		{name: "untrusted host without origin", remoteAddr: "127.0.0.1:1234", host: "evil.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := workdirRequest(t, srv, dirB, tc.remoteAddr, tc.origin, tc.host)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected forbidden workdir switch 403, got %d: %s", w.Code, w.Body.String())
+			}
+			if got := srv.currentWorkDir(); got != before {
+				t.Fatalf("forbidden request changed workdir to %q", got)
+			}
+		})
+	}
+}
+
+func TestSwitchWorkdirConcurrent(t *testing.T) {
+	srv, dirA := setupTestServer(t)
+	dirB := initTestRepo(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(2)
+		go func(index int) {
+			defer wg.Done()
+			workDir := dirB
+			if index%2 == 0 {
+				workDir = dirA
+			}
+			w := workdirRequest(t, srv, workDir, "127.0.0.1:1234", "", "127.0.0.1:8322")
+			if w.Code != http.StatusOK {
+				t.Errorf("expected concurrent workdir switch 200, got %d", w.Code)
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/api/diff?type=working", nil)
+			srv.engine.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected concurrent diff 200, got %d", w.Code)
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/api/branches", nil)
+			srv.engine.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("expected concurrent branches 200, got %d", w.Code)
+			}
+		}()
+	}
+	wg.Wait()
+}

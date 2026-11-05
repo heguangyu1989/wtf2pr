@@ -28,6 +28,27 @@ test('source selector exposes all three modes and an honest empty branch state',
   })
 })
 
+test('review workspace shows the active repository and workdir errors', async () => {
+  await withVite(async vite => {
+    const { default: ReviewWorkspace } = await vite.ssrLoadModule('/src/components/ReviewWorkspace.vue')
+    const loadingHtml = await renderToString(createSSRApp(ReviewWorkspace, {
+      target: { type: 'working', commit: '', base: '' },
+      workDir: '/repo/b',
+      workdirChanging: true,
+      workdirError: '',
+    }))
+    assert.match(loadingHtml, /value="\/repo\/b"/)
+    assert.match(loadingHtml, /切换中/)
+    const errorHtml = await renderToString(createSSRApp(ReviewWorkspace, {
+      target: { type: 'working', commit: '', base: '' },
+      workDir: '/repo/b',
+      workdirChanging: false,
+      workdirError: 'workDir is not a git repository',
+    }))
+    assert.match(errorHtml, /workDir is not a git repository/)
+  })
+})
+
 test('review workspace and app use the unified review navigation', async () => {
   await withVite(async vite => {
     const { default: ReviewWorkspace } = await vite.ssrLoadModule('/src/components/ReviewWorkspace.vue')
