@@ -1,33 +1,31 @@
 <template>
-  <div class="flex h-full min-h-0 flex-col gap-3">
-    <header class="flex shrink-0 flex-wrap items-end justify-between gap-2 px-1">
-      <div>
-        <h1 class="ml-1 text-[22px] leading-7 font-semibold tracking-[-0.02em]">代码审查</h1>
-        <p class="mt-0.5 text-xs text-[var(--muted)]">本地 Git 审查工作区</p>
-      </div>
-      <div class="text-right text-xs text-[var(--muted)]">
-        <div class="font-mono text-[var(--accent)]">{{ scopeSummary }}</div>
-        <div v-if="diffData" class="mt-0.5 tabular-nums">{{ diffData.files.length }} 个变更文件</div>
-        <div v-if="diffData?.comparison" class="mt-0.5">共同祖先 {{ diffData.comparison.mergeBase.slice(0, 8) }}</div>
+  <div class="flex h-full min-h-0 flex-col gap-2">
+    <header class="shrink-0 rounded-lg border bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <h1 class="shrink-0 px-1 text-sm font-semibold tracking-[-0.01em]">代码审查</h1>
+        <WorkdirSwitcher
+          :work-dir="workDir"
+          :changing="workdirChanging"
+          :error="workdirError"
+          @switch="$emit('switch-workdir', $event)"
+        />
+        <span class="hidden h-4 w-px bg-[var(--border)] sm:block" aria-hidden="true"></span>
+        <DiffSourceSelector
+          :key="workDir"
+          :target="target"
+          :branches="branches"
+          :branch-error="branchError"
+          :branch-loading="branchLoading"
+          @retry-branches="loadBranches"
+          @update:target="$emit('update:target', $event)"
+        />
+        <div class="ml-auto flex flex-wrap items-center gap-x-2.5 text-[13px] text-[var(--muted)]">
+          <span class="font-mono text-[var(--accent)]">{{ scopeSummary }}</span>
+          <span v-if="diffData" class="tabular-nums">{{ diffData.files.length }} 个变更文件</span>
+          <span v-if="diffData?.comparison" :title="`共同祖先 ${diffData.comparison.mergeBase}`">共同祖先 {{ diffData.comparison.mergeBase.slice(0, 8) }}</span>
+        </div>
       </div>
     </header>
-
-    <WorkdirSwitcher
-      :work-dir="workDir"
-      :changing="workdirChanging"
-      :error="workdirError"
-      @switch="$emit('switch-workdir', $event)"
-    />
-
-    <DiffSourceSelector
-      :key="workDir"
-      :target="target"
-      :branches="branches"
-      :branch-error="branchError"
-      :branch-loading="branchLoading"
-      @retry-branches="loadBranches"
-      @update:target="$emit('update:target', $event)"
-    />
 
     <div v-if="target.type === 'commit' && target.commit && !reviewHydrated" class="shrink-0 rounded-lg border bg-white px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-900">
       <div v-if="reviewLoadError" class="flex items-center gap-2 text-[var(--negative)]" role="alert">

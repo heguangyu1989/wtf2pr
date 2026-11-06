@@ -14,6 +14,187 @@ export function getFileSidePath(file, side) {
   return file?.newFile || getFilePath(file)
 }
 
+function splitTopLevelPatterns(value) {
+  const parts = ['']
+  let braceDepth = 0
+  let inCharacterClass = false
+  for (const char of value) {
+    if (char === '[' && !inCharacterClass) inCharacterClass = true
+    else if (char === ']' && inCharacterClass) inCharacterClass = false
+    else if (!inCharacterClass && char === '{') braceDepth++
+    else if (!inCharacterClass && char === '}' && braceDepth > 0) braceDepth--
+
+    if (char === ',' && !inCharacterClass && braceDepth === 0) parts.push('')
+    else parts[parts.length - 1] += char
+  }
+  return parts
+}
+
+export function parseGlobPatterns(value = '') {
+  if (typeof value !== 'string') return []
+  return splitTopLevelPatterns(value).map(part => part.trim()).filter(Boolean)
+}
+
+function expandBracePatterns(pattern) {
+  let start = -1
+  let depth = 0
+  let inCharacterClass = false
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]
+    if (char === '[' && !inCharacterClass) inCharacterClass = true
+    else if (char === ']' && inCharacterClass) inCharacterClass = false
+    else if (!inCharacterClass && char === '{') {
+      if (depth === 0) start = index
+      depth++
+    } else if (!inCharacterClass && char === '}' && depth > 0) {
+      depth--
+      if (depth === 0) {
+        const prefix = pattern.slice(0, start)
+        const suffix = pattern.slice(index + 1)
+        return splitTopLevelPatterns(pattern.slice(start + 1, index)).flatMap(part =>
+          expandBracePatterns(prefix + part + suffix))
+      }
+    }
+  }
+  return [pattern]
+}
+
+const regexSpecialCharacters = new Set(['\\', '^', '$', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|'])
+
+function escapeRegexCharacter(char) {
+  return regexSpecialCharacters.has(char) ? `\\${char}` : char
+}
+
+function compileCharacterClass(pattern, start) {
+  let index = start + 1
+  let content = ''
+  while (index < pattern.length && pattern[index] !== ']') {
+    const char = pattern[index]
+    content += char === '\\' ? '\\\\' : char === '[' ? '\\[' : char
+    index++
+  }
+  if (index === pattern.length || !content) return null
+
+  const negated = content[0] === '!' || content[0] === '^'
+  if (negated) content = content.slice(1)
+  if (!content) return null
+  return { source: `(?!/)[${negated ? '^' : ''}${content}]`, index: index + 1 }
+}
+
+function compileFragment(pattern, start = 0, inBraces = false) {
+  const alternatives = ['']
+  let index = start
+  let closed = false
+
+  function append(source) {
+    alternatives[alternatives.length - 1] += source
+  }
+
+  while (index < pattern.length) {
+    const char = pattern[index]
+    if (inBraces && char === '}') {
+      closed = true
+      index++
+      break
+    }
+    if (inBraces && char === ',') {
+      alternatives.push('')
+      index++
+      continue
+    }
+    if (char === '{') {
+      const group = compileFragment(pattern, index + 1, true)
+      if (group.closed) {
+        append(`(?:${group.source})`)
+        index = group.index
+        continue
+      }
+    }
+    if (char === '*') {
+      let end = index
+      while (pattern[end] === '*') end++
+      const globstar = end - index > 1
+      if (globstar && pattern[end] === '/') {
+        append('(?:[^/]+/)*')
+        index = end + 1
+      } else {
+        append(globstar ? '.*' : '[^/]*')
+        index = end
+      }
+      continue
+    }
+    if (char === '?') {
+      append('[^/]')
+      index++
+      continue
+    }
+    if (char === '[') {
+      const characterClass = compileCharacterClass(pattern, index)
+      if (characterClass) {
+        append(characterClass.source)
+        index = characterClass.index
+        continue
+      }
+    }
+    append(escapeRegexCharacter(char))
+    index++
+  }
+
+  return { source: alternatives.join('|'), index, closed }
+}
+
+function compileGlob(pattern) {
+  const matchers = expandBracePatterns(pattern).map(compileSingleGlob)
+  return filePath => matchers.some(matches => matches(filePath))
+}
+
+function compileSingleGlob(rawPattern) {
+  let pattern = rawPattern
+  let rootOnly = false
+  if (pattern.startsWith('./')) {
+    rootOnly = true
+    pattern = pattern.slice(2)
+  } else if (pattern.startsWith('/')) {
+    rootOnly = true
+    pattern = pattern.replace(/^\/+/, '')
+  }
+
+  const matchPath = rootOnly || pattern.includes('/')
+  pattern = pattern.replace(/\/+$/, '')
+  if (!pattern) return () => false
+
+  const { source } = compileFragment(pattern)
+  let regex
+  try {
+    regex = new RegExp(`^(?:${source})$`)
+  } catch {
+    return () => false
+  }
+  if (!matchPath) {
+    return filePath => filePath.split('/').some(segment => regex.test(segment))
+  }
+
+  return filePath => {
+    if (regex.test(filePath)) return true
+    let separator = filePath.indexOf('/')
+    while (separator >= 0) {
+      if (regex.test(filePath.slice(0, separator))) return true
+      separator = filePath.indexOf('/', separator + 1)
+    }
+    return false
+  }
+}
+
+export function filterFiles(files, include = '', exclude = '') {
+  const includes = parseGlobPatterns(include).map(compileGlob)
+  const excludes = parseGlobPatterns(exclude).map(compileGlob)
+  return files.filter(file => {
+    const filePath = getFilePath(file)
+    if (includes.length && !includes.some(matches => matches(filePath))) return false
+    return !excludes.some(matches => matches(filePath))
+  })
+}
+
 export function getNodeKey(node) {
   return `${node.type}:${node.path}`
 }

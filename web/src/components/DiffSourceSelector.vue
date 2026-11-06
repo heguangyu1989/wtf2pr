@@ -1,12 +1,12 @@
 <template>
-  <div class="shrink-0 rounded-lg border bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
-    <div class="flex flex-wrap items-center gap-3">
-      <div class="flex rounded-md bg-gray-100 p-1 dark:bg-gray-800" aria-label="Diff 来源">
+  <div class="flex min-w-0 flex-wrap items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="flex rounded-md bg-gray-100 p-0.5 dark:bg-gray-800" aria-label="Diff 来源">
         <button
           v-for="mode in modes"
           :key="mode.value"
           type="button"
-          class="min-h-7 rounded px-3 py-1 text-xs font-medium"
+          class="min-h-6 rounded px-2.5 py-0.5 text-[13px] font-medium"
           :class="target.type === mode.value ? 'bg-white text-gray-900 dark:bg-gray-700 dark:text-gray-100' : 'text-[var(--muted)] hover:text-gray-800 dark:hover:text-gray-200'"
           :aria-pressed="target.type === mode.value"
           @click="selectMode(mode.value)"
@@ -15,7 +15,7 @@
       <div class="text-xs text-gray-500">{{ scopeDescription }}</div>
     </div>
 
-    <div v-if="target.type === 'commit'" class="mt-3 flex flex-wrap items-center gap-2">
+    <div v-if="target.type === 'commit'" class="mt-1 flex w-full flex-wrap items-center gap-2">
       <label for="commit-select" class="text-xs font-medium text-gray-600 dark:text-gray-300">指定 Commit</label>
       <select
         id="commit-select"
@@ -40,7 +40,7 @@
       </span>
     </div>
 
-    <div v-if="target.type === 'branch'" class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+    <div v-if="target.type === 'branch'" class="mt-1 flex w-full flex-wrap items-center gap-2 text-xs">
       <span class="font-medium text-gray-600 dark:text-gray-300">当前分支</span>
       <code class="rounded bg-gray-100 px-2 py-1 dark:bg-gray-800">{{ branches?.current || 'detached HEAD' }}</code>
       <span aria-hidden="true">→</span>
