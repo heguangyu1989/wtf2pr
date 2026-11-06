@@ -1,6 +1,7 @@
 <template>
   <div class="flex h-dvh min-h-0 flex-col overflow-hidden bg-[var(--ground)] text-[var(--text)]">
     <AppHeader
+      :active-tab="activeTab"
       :saved="saved"
       :export-format="exportFormat"
       :review-label="reviewLabel"
@@ -12,23 +13,9 @@
       @do-export="doExport"
       @new-review="createNewReview"
       @show-help="showHelp = true"
+      @select-tab="activeTab = $event"
       @update:export-format="exportFormat = $event"
     />
-
-    <div class="w-full shrink-0 overflow-x-auto px-4 lg:px-5">
-      <nav class="flex min-w-max gap-5" aria-label="主导航">
-        <button
-          v-for="t in tabs"
-          :key="t.key"
-          class="min-h-9 border-b-2 px-0.5 text-sm transition"
-          :class="activeTab === t.key ? 'border-[var(--accent)] font-medium text-[var(--text)]' : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'"
-          :aria-current="activeTab === t.key ? 'page' : undefined"
-          @click="activeTab = t.key"
-        >
-          {{ t.label }}
-        </button>
-      </nav>
-    </div>
 
     <main class="app-sheet mx-3 mb-3 min-h-0 w-auto flex-1 overflow-hidden p-4">
       <template v-if="activeTab === 'review'">
@@ -191,12 +178,6 @@ import ExportModal from './components/ExportModal.vue'
 import HelpModal from './components/HelpModal.vue'
 import ReviewResultModal from './components/ReviewResultModal.vue'
 import { getReview, saveReview as apiSaveReview, newReview as apiNewReview, switchReview as apiSwitchReview, getReviewDetail, getReviews, exportReview, getConfig, getTemplate, saveTemplate as apiSaveTemplate, switchWorkdir as apiSwitchWorkdir } from './api/client.js'
-
-const tabs = [
-  { key: 'review', label: '代码审查' },
-  { key: 'history', label: '历史 Review' },
-  { key: 'template', label: '导出模板' },
-]
 
 const activeTab = ref('review')
 const reviewTarget = ref({ type: 'working', commit: '', base: '' })

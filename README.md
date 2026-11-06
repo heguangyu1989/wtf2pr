@@ -14,8 +14,9 @@
   - 尚未被 Git 跟踪的新文件（untracked）
 - **Commit Review**：输入任意 Commit Hash，查看该 Commit 的完整 Diff 与 Commit 信息。
 - **Branch Review**：选择目标本地分支，按 `目标分支...HEAD` 查看当前分支自共同祖先以来的提交变更，不包含未提交修改。
-- **工作目录切换**：在审查页输入本机 Git 仓库的绝对路径或其中子目录，切换后刷新 Commit、分支、diff 与完整文件数据；非法路径不会改变当前仓库，Review 文件保持不变。
-- **文件浏览器**：支持目录树/平铺、目录名选中筛选、折叠/展开、连续滚动、路径/类型/测试/文档排序、反向排序和浏览器偏好保存，不再按文件分页。
+- **工作目录切换**：在审查页点击当前工作目录，在弹窗中输入服务所在环境的 Git 仓库绝对路径或其中子目录；切换后刷新 Commit、分支、diff 与完整文件数据，非法路径不会改变当前仓库，Review 文件保持不变。
+- **文件浏览器**：支持目录树/平铺、文件夹折叠/展开、连续滚动、路径/类型/测试/文档排序、反向排序和浏览器偏好保存，不再按文件分页；文件夹仅控制展开状态，不改变右侧 Diff。
+- **文件过滤**：包含/排除条件支持逗号分隔的 VS Code 风格 glob，内置 Go 测试、Markdown、JS/TS 测试和文档目录规则；仅过滤左侧导航并保留已打开的 Diff，过滤条件保存在浏览器本地。
 - **完整文件**：通过原生弹窗查看变更前/后的完整文件，支持行号、复制、Esc 和遮罩关闭，覆盖新增、删除、重命名、空文件和二进制文件。
 - **行级评论**：可对文件整体或具体代码行添加 Review 意见（指定 Commit 模式）。
 - **结构化导出**：支持导出为 **Markdown**、**JSON**、**XML**，仅包含被评论的文件与关键代码行，避免冗余 Token 消耗。
@@ -99,6 +100,8 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 > - 若指定了 `--review-id`，则使用 `~/.wtf2pr/review_{id}.json`
 > - 否则使用 `~/.wtf2pr/review.json`
 
+服务未内置身份认证。绑定非 loopback 地址时，仅应在可信网络中开放，或在反向代理层配置访问控制；能够访问服务的客户端均可调用工作目录切换接口。
+
 ---
 
 ## 项目结构
@@ -125,7 +128,7 @@ make dev-web DEV_HOST=0.0.0.0 DEV_PORT=3000
 - `GET /api/diff?type=commit&commit=<hash>` — 获取指定 Commit 的 Diff
 - `GET /api/diff?type=branch&base=<branch>` — 获取当前分支到目标本地分支的三点 Diff
 - `GET /api/branches` — 获取当前分支、本地分支列表与默认目标分支
-- `POST /api/config/workdir` — 切换本机 Git 工作目录；仅接受直连 loopback 与可信本机页面来源，请求体为 `{ "workDir": "/absolute/repo" }`
+- `POST /api/config/workdir` — 切换服务所在环境的 Git 工作目录，支持本地及远程部署访问，请求体为 `{ "workDir": "/absolute/repo" }`
 - `GET /api/file/content?type=<type>&path=<path>&side=old|new&commit=<hash>&base=<branch>` — 读取变更前/后的完整文件（路径需属于对应 diff）
 - `GET /api/review` — 获取当前 Review 数据
 - `POST /api/review` — 保存 Review 数据

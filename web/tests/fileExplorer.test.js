@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFileTree, getDefaultFilePath, getFileSidePath, getNodeKey, getFilePath, sortFiles } from '../src/utils/fileExplorer.js'
+import { buildFileTree, filterFiles, getDefaultFilePath, getFileSidePath, getNodeKey, getFilePath, sortFiles } from '../src/utils/fileExplorer.js'
 
 const file = path => ({ oldFile: path, newFile: path, hunks: [] })
 const paths = files => files.map(item => getFilePath(item))
@@ -93,4 +93,80 @@ test('selects old and new paths for renames with added/deleted fallbacks', () =>
 
 test('distinguishes file and directory keys when a file becomes a directory', () => {
   assert.notEqual(getNodeKey({ type: 'file', path: 'a' }), getNodeKey({ type: 'directory', path: 'a' }))
+})
+
+test('empty glob filters preserve every file without mutating the input', () => {
+  const input = [file('src/main.go'), file('README.md')]
+  const original = [...input]
+  const got = filterFiles(input, ' , , ', ' , ')
+  assert.deepEqual(paths(got), ['src/main.go', 'README.md'])
+  assert.deepEqual(input, original)
+  assert.notEqual(got, input)
+})
+
+test('combines include and exclude lists with OR and applies excludes last', () => {
+  const input = [
+    file('main.go'),
+    file('main_test.go'),
+    file('internal/git/git_test.go'),
+    file('docs/guide.md'),
+    file('README.md'),
+    file('web/app.test.js'),
+    file('web/app.js'),
+  ]
+  const got = filterFiles(input, ' **/*_test.go, , *.md, **/*.test.js ', 'docs/**, internal/**')
+  assert.deepEqual(paths(got), ['main_test.go', 'README.md', 'web/app.test.js'])
+})
+
+test('supports globstars, single-segment wildcards and question marks', () => {
+  const input = [
+    file('main.go'),
+    file('src/main.go'),
+    file('src/main_test.go'),
+    file('src/nested/util.go'),
+    file('src/nested/util_test.go'),
+  ]
+  assert.deepEqual(paths(filterFiles(input, '**/*.go')), paths(input))
+  assert.deepEqual(paths(filterFiles(input, 'src/*.go')), ['src/main.go', 'src/main_test.go'])
+  assert.deepEqual(paths(filterFiles(input, 'src/*')), ['src/main.go', 'src/main_test.go', 'src/nested/util.go', 'src/nested/util_test.go'])
+  assert.deepEqual(paths(filterFiles(input, 'src/????.go')), ['src/main.go'])
+})
+
+test('keeps brace commas intact and supports character classes and literal regex characters', () => {
+  const input = [
+    file('README.md'),
+    file('docs/guide.md'),
+    file('docs/guide.mdx'),
+    file('docs/guide.txt'),
+    file('src/file1.js'),
+    file('src/filea.js'),
+    file('src/file10.js'),
+    file('src/a+b(1).js'),
+  ]
+  assert.deepEqual(paths(filterFiles(input, '*.{md,mdx}')), ['README.md', 'docs/guide.md', 'docs/guide.mdx'])
+  assert.deepEqual(paths(filterFiles(input, 'src/file[0-9].js')), ['src/file1.js'])
+  assert.deepEqual(paths(filterFiles(input, 'src/file[!0-9].js')), ['src/filea.js'])
+  assert.deepEqual(paths(filterFiles(input, 'src/a+b(1).js')), ['src/a+b(1).js'])
+  assert.doesNotThrow(() => filterFiles(input, 'src/file[0-9.js, src/{main.go'))
+  assert.deepEqual(filterFiles(input, 'src/file[0-9.js, src/{main.go'), [])
+  assert.doesNotThrow(() => filterFiles(input, 'src/file[9-0].js'))
+  assert.deepEqual(filterFiles(input, 'src/file[9-0].js'), [])
+})
+
+test('distinguishes root-relative paths from directory names at any depth', () => {
+  const input = [file('src/main.go'), file('nested/src/main.go'), file('docs/guide.md'), file('nested/docs/guide.md')]
+  assert.deepEqual(paths(filterFiles(input, 'src')), ['src/main.go', 'nested/src/main.go'])
+  assert.deepEqual(paths(filterFiles(input, './src/*.go')), ['src/main.go'])
+  assert.deepEqual(paths(filterFiles(input, 'docs/**')), ['docs/guide.md'])
+  assert.deepEqual(paths(filterFiles(input, '**/docs/**')), ['docs/guide.md', 'nested/docs/guide.md'])
+
+  const mixed = [file('README.md'), file('nested/guide.md'), file('docs/guide.txt')]
+  assert.deepEqual(paths(filterFiles(mixed, '{*.md,docs/**}')), ['README.md', 'nested/guide.md', 'docs/guide.txt'])
+})
+
+test('filters renamed files by their new path and deleted files by their old path', () => {
+  const renamed = { oldFile: 'src/old.go', newFile: 'src/new.js', hunks: [] }
+  const deleted = { oldFile: 'src/old_test.go', newFile: '', hunks: [] }
+  assert.deepEqual(filterFiles([renamed, deleted], '*.js'), [renamed])
+  assert.deepEqual(filterFiles([renamed, deleted], '*_test.go'), [deleted])
 })

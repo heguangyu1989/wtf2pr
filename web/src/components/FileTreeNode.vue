@@ -1,28 +1,16 @@
 <template>
   <li>
-    <div
-      v-if="node.type === 'directory'"
-      class="flex min-h-8 items-center rounded"
-      :class="selectedDirectory === node.path ? 'bg-[var(--selection-bg)]' : ''"
-      :style="indent"
-    >
+    <div v-if="node.type === 'directory'" class="flex min-h-8 items-center rounded" :style="indent">
       <button
         type="button"
-        class="flex min-h-8 min-w-7 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+        class="flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded px-1 py-1 text-left text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
         :aria-expanded="!isCollapsed"
         :aria-label="`${isCollapsed ? '展开' : '折叠'}目录 ${node.path}`"
+        :title="node.path"
         @click="$emit('toggle', node.path)"
       >
-        <AppIcon :name="isCollapsed ? 'chevron-right' : 'chevron-down'" class="h-3.5 w-3.5" />
-      </button>
-      <button
-        type="button"
-        class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1 text-left text-xs font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-        :aria-pressed="selectedDirectory === node.path"
-        :title="`筛选目录 ${node.path}`"
-        @click="$emit('select-directory', node.path)"
-      >
-        <AppIcon name="folder" class="h-4 w-4 text-gray-500" />
+        <AppIcon :name="isCollapsed ? 'chevron-right' : 'chevron-down'" class="h-3.5 w-3.5 shrink-0 text-gray-500" />
+        <AppIcon name="folder" class="h-4 w-4 shrink-0 text-gray-500" />
         <span class="truncate">{{ node.name }}</span>
       </button>
     </div>
@@ -47,11 +35,9 @@
         :node="child"
         :depth="depth + 1"
         :selected-path="selectedPath"
-        :selected-directory="selectedDirectory"
         :collapsed="collapsed"
         :comment-counts="commentCounts"
         @select="$emit('select', $event)"
-        @select-directory="$emit('select-directory', $event)"
         @toggle="$emit('toggle', $event)"
       />
     </ul>
@@ -69,11 +55,10 @@ const props = defineProps({
   node: { type: Object, required: true },
   depth: { type: Number, default: 0 },
   selectedPath: { type: String, default: '' },
-  selectedDirectory: { type: String, default: '' },
   collapsed: { type: Set, required: true },
   commentCounts: { type: Map, required: true },
 })
-defineEmits(['select', 'toggle', 'select-directory'])
+defineEmits(['select', 'toggle'])
 
 const isCollapsed = computed(() => props.collapsed.has(props.node.path))
 const selected = computed(() => props.node.type === 'file' && props.selectedPath === props.node.path)

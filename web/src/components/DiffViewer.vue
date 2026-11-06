@@ -6,9 +6,7 @@
         :files="diffData.files"
         :comments="comments"
         :selected-path="selectedPath"
-        :selected-directory="selectedDirectory"
         @select="$emit('update:selectedPath', $event)"
-        @select-directory="selectDirectory"
       />
     </div>
 
@@ -51,7 +49,7 @@ import DiffFile from './DiffFile.vue'
 import ReadonlyDiffFile from './ReadonlyDiffFile.vue'
 import FileExplorer from './FileExplorer.vue'
 import FileContentModal from './FileContentModal.vue'
-import { getDefaultFilePath, getFilePath } from '../utils/fileExplorer.js'
+import { getFilePath } from '../utils/fileExplorer.js'
 
 const props = defineProps({
   diffData: { type: Object, default: null },
@@ -61,11 +59,10 @@ const props = defineProps({
   selectedPath: { type: String, default: '' },
   target: { type: Object, default: () => ({ type: 'working', commit: '', base: '' }) },
 })
-const emit = defineEmits(['update:comments', 'update:selectedPath'])
+defineEmits(['update:comments', 'update:selectedPath'])
 
 const fullFile = ref(null)
 const fullTarget = ref(null)
-const selectedDirectory = ref('')
 const selectedFile = computed(() => props.diffData?.files?.find(file => getFilePath(file) === props.selectedPath) || null)
 
 function openFullFile() {
@@ -73,22 +70,10 @@ function openFullFile() {
   fullFile.value = selectedFile.value
 }
 
-function selectDirectory(directory) {
-  selectedDirectory.value = directory
-  if (!directory || props.selectedPath === directory || props.selectedPath.startsWith(`${directory}/`)) return
-  const candidates = props.diffData?.files?.filter(file => {
-    const filePath = getFilePath(file)
-    return filePath === directory || filePath.startsWith(`${directory}/`)
-  }) || []
-  emit('update:selectedPath', getDefaultFilePath(candidates))
-}
-
 watch(() => props.diffData, () => {
   fullFile.value = null
-  selectedDirectory.value = ''
 })
 watch(() => props.target, () => {
   fullFile.value = null
-  selectedDirectory.value = ''
 }, { deep: true })
 </script>

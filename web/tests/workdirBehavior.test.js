@@ -40,6 +40,13 @@ async function initialize(s) {
   await s.flush()
 }
 
+async function openWorkdir(s) {
+  const button = s.walk(s.root, node => node.type === 'button' && node.props?.['aria-label']?.startsWith('切换工作目录，当前'))[0]
+  assert.ok(button, 'expected workdir dialog trigger')
+  await button.props.onClick()
+  await s.flush()
+}
+
 async function workspaceScenario(t, target, fetcher) {
   const h = await createClientRenderer(t)
   const { default: ReviewWorkspace } = await h.runner.import('/src/components/ReviewWorkspace.vue')
@@ -60,13 +67,14 @@ async function workspaceScenario(t, target, fetcher) {
 test('initial commit and slow config cannot overwrite a successful canonical switch', async t => {
   const s = await appScenario(t, { type: 'commit', commit: 'abc123', comments: [] })
   await initialize(s)
+  await openWorkdir(s)
   await s.type(s.root, '/repo/b/subdirectory')
   await s.submit(s.root)
   s.switching.resolve(apiOk({ workDir: '/canonical/b' }))
   await s.flush()
   s.config.resolve(apiOk({ workDir: '/repo/a', reviewID: 'old-review' }))
   await s.flush()
-  assert.equal(s.inputOf(s.root).value, '/canonical/b')
+  assert.match(s.textOf(s.root), /\/canonical\/b/)
   s.app.unmount()
 })
 
@@ -75,7 +83,7 @@ test('normal config still applies after restoring an initial commit', async t =>
   await initialize(s)
   s.config.resolve(apiOk({ workDir: '/repo/a', reviewFile: 'review.json' }))
   await s.flush()
-  assert.equal(s.inputOf(s.root).value, '/repo/a')
+  assert.match(s.textOf(s.root), /\/repo\/a/)
   assert.match(s.textOf(s.root), /Review: default/)
   s.app.unmount()
 })
@@ -83,6 +91,7 @@ test('normal config still applies after restoring an initial commit', async t =>
 test('initial config preserves an unsubmitted workdir draft', async t => {
   const s = await appScenario(t, { type: 'working', commit: '', comments: [] })
   await initialize(s)
+  await openWorkdir(s)
   await s.type(s.root, '/typed/b')
   s.config.resolve(apiOk({ workDir: '/repo/a', reviewFile: 'review.json' }))
   await s.flush()
@@ -96,6 +105,7 @@ test('failed switch preserves the draft, error and current repository requests',
   s.config.resolve(apiOk({ workDir: '/repo/a', reviewFile: 'review.json' }))
   await s.flush()
   const diffCalls = s.calls.filter(url => url.startsWith('/api/diff')).length
+  await openWorkdir(s)
   await s.type(s.root, '/typed/b')
   await s.submit(s.root)
   s.switching.resolve({ json: async () => ({ code: 400, message: 'bad repository', data: null }) })
@@ -111,11 +121,12 @@ test('stale export cannot reopen a result after switching repository', async t =
   await initialize(s)
   s.config.resolve(apiOk({ workDir: '/repo/a', reviewFile: 'review.json' }))
   await s.flush()
-  const exportButton = s.walk(s.root, node => node.type === 'button' && s.textOf(node) === '导出')[0]
+  const exportButton = s.walk(s.root, node => node.type === 'button' && s.textOf(node) === '导出 Review')[0]
   assert.ok(exportButton)
   exportButton.props.onClick()
   await s.flush()
   assert.ok(s.calls.includes('/api/export'))
+  await openWorkdir(s)
   await s.type(s.root, '/repo/b')
   await s.submit(s.root)
   s.switching.resolve(apiOk({ workDir: '/canonical/b' }))

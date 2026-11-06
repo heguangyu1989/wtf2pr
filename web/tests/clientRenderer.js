@@ -117,8 +117,8 @@ export async function createClientRenderer(t) {
     if (!node) return ''
     return `${node.text || ''}${(node.children || []).map(textOf).join('')}`
   }
-  function inputOf(root) {
-    return walk(root, node => node.props?.id === 'workdir-input')[0]
+  function inputOf(root, id = 'workdir-input') {
+    return walk(root, node => node.props?.id === id)[0]
   }
   function formOf(root) {
     return walk(root, node => node.type === 'form' && node.props?.onSubmit)[0]
@@ -129,8 +129,8 @@ export async function createClientRenderer(t) {
       await Vue.nextTick()
     }
   }
-  async function type(root, value) {
-    const input = inputOf(root)
+  async function type(root, value, id = 'workdir-input') {
+    const input = inputOf(root, id)
     input.value = value
     const event = { target: input, preventDefault() {} }
     for (const listener of input.listeners.input || []) listener(event)

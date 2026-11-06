@@ -59,7 +59,6 @@ test('review workspace and app use the unified review navigation', async () => {
     assert.match(workspaceHtml, /未提交/)
     assert.match(workspaceHtml, /分支对比/)
     assert.match(workspaceHtml, /<h1[^>]*>代码审查<\/h1>/)
-    assert.match(workspaceHtml, /本地 Git 审查工作区/)
 
     const { default: App } = await vite.ssrLoadModule('/src/App.vue')
     const appHtml = await renderToString(createSSRApp(App))

@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,35 +126,7 @@ func (s *Server) handleGetConfig(c *gin.Context) {
 	}})
 }
 
-func isLoopbackHost(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
-	}
-	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
-}
-
-func allowWorkdirRequest(r *http.Request) bool {
-	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(remoteIP).IsLoopback() {
-		return false
-	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return isLoopbackHost(r.Host)
-	}
-	u, err := url.Parse(origin)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || !isLoopbackHost(u.Host) {
-		return false
-	}
-	return isLoopbackHost(r.Host)
-}
-
 func (s *Server) handleSwitchWorkdir(c *gin.Context) {
-	if !allowWorkdirRequest(c.Request) {
-		c.JSON(http.StatusForbidden, models.APIResponse{Code: 403, Message: "workdir switch is only allowed from localhost"})
-		return
-	}
 	var req models.WorkdirRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.APIResponse{Code: 400, Message: err.Error()})
